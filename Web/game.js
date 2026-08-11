@@ -1133,7 +1133,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, fighters, swarm, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; } };
+window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1342,7 +1342,9 @@ function update(dt) {
     if (player.vel.length() > maxV) player.vel.setLength(THREE.MathUtils.lerp(player.vel.length(), maxV, 0.1));
     ship.position.addScaledVector(player.vel, dt);
 
-    player.angVel.x += -mouseDY * 0.0022 * TUNE.mousePitch;
+    // estilo FPS en TODOS los mandos: ratón/pulgar ARRIBA = morro ARRIBA
+    // (una sola inversión aquí, en el origen — antes era convención avión)
+    player.angVel.x += mouseDY * 0.0022 * TUNE.mousePitch;
     player.angVel.y += -mouseDX * 0.0022 * TUNE.mouseYaw;
     mouseDX = mouseDY = 0;
     player.angVel.z += ((keys.KeyQ ? 1 : 0) - (keys.KeyE ? 1 : 0)) * TUNE.rollAccel * dt;
