@@ -1378,7 +1378,11 @@ function update(dt) {
     player.angVel.x += mouseDY * 0.0022 * TUNE.mousePitch;
     player.angVel.y += -mouseDX * 0.0022 * TUNE.mouseYaw;
     mouseDX = mouseDY = 0;
-    player.angVel.z += ((keys.KeyQ ? 1 : 0) - (keys.KeyE ? 1 : 0)) * TUNE.rollAccel * dt;
+    // alabeo: Q/E en teclado; en táctil, las DIAGONALES del stick escoran la nave
+    // (x·|y| = cero en vertical u horizontal puros, máximo en las esquinas)
+    const rollIn = ((keys.KeyQ ? 1 : 0) - (keys.KeyE ? 1 : 0))
+      + (isTouch ? -touchStick.x * Math.abs(touchStick.y) * 1.3 : 0);
+    player.angVel.z += rollIn * TUNE.rollAccel * dt;
     player.angVel.multiplyScalar(Math.exp(-TUNE.angDamp * dt));
     ship.rotateX(player.angVel.x * dt);
     ship.rotateY(player.angVel.y * dt);
