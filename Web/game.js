@@ -411,7 +411,8 @@ function initAudio() {
   engineGain.gain.value = 0;
   engineSrc.connect(engineFilter).connect(engineGain).connect(master);
   engineSrc.start();
-  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2 };
+  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2, music: null };
+  startMusic();
 }
 function gainFor(pos, range) {
   const d = pos.distanceTo(ship.position);
@@ -421,18 +422,136 @@ function sfxLaser(vol) {
   if (sfxMuted || !audio || vol <= 0) return;
   if (audio.laserBudget < 1) return;
   audio.laserBudget -= 1;
-  const { ctx, master } = audio;
+  const { ctx, master, noiseBuf } = audio;
   const t = ctx.currentTime;
+  // "PYEW" tipo blaster de space-opera: barrido descendente pronunciado
+  // + parcial metálico + chasquido de ataque (el original era un cable de acero golpeado)
   const o = ctx.createOscillator();
   o.type = 'sawtooth';
-  o.frequency.setValueAtTime(840 + Math.random() * 160, t);
-  o.frequency.exponentialRampToValueAtTime(150, t + 0.11);
+  o.frequency.setValueAtTime(2300 + Math.random() * 300, t);
+  o.frequency.exponentialRampToValueAtTime(170, t + 0.16);
   const g = ctx.createGain();
-  g.gain.setValueAtTime(0.16 * vol, t);
-  g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  g.gain.setValueAtTime(0.2 * vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
   o.connect(g).connect(master);
   o.start(t);
-  o.stop(t + 0.15);
+  o.stop(t + 0.2);
+  const o2 = ctx.createOscillator();
+  o2.type = 'square';
+  o2.frequency.setValueAtTime(3400, t);
+  o2.frequency.exponentialRampToValueAtTime(240, t + 0.12);
+  const g2 = ctx.createGain();
+  g2.gain.setValueAtTime(0.06 * vol, t);
+  g2.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  o2.connect(g2).connect(master);
+  o2.start(t);
+  o2.stop(t + 0.14);
+  const n = ctx.createBufferSource();
+  n.buffer = noiseBuf;
+  const nf = ctx.createBiquadFilter();
+  nf.type = 'highpass';
+  nf.frequency.value = 2000;
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(0.12 * vol, t);
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+  n.connect(nf).connect(ng).connect(master);
+  n.start(t);
+  n.stop(t + 0.04);
+}
+
+/* ---------------- música de fondo: space-opera generativa ORIGINAL ----------------
+   Drone grave, pads en progresión menor épica (i–VI–III–VII) y tambores de
+   guerra, compuestos en tiempo real por el motor — ni un byte de audio externo. */
+const MUSIC_CHORDS = [
+  { root: 73.42, notes: [146.83, 174.61, 220.0] },   // Dm
+  { root: 58.27, notes: [116.54, 146.83, 174.61] },  // Sib
+  { root: 87.31, notes: [174.61, 220.0, 261.63] },   // Fa
+  { root: 65.41, notes: [130.81, 164.81, 196.0] },   // Do
+];
+function startMusic() {
+  if (!audio || audio.music) return;
+  const { ctx, master } = audio;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.14; // colchón: siempre por debajo de los efectos
+  gain.connect(master);
+  const droneF = ctx.createBiquadFilter();
+  droneF.type = 'lowpass';
+  droneF.frequency.value = 260;
+  const droneG = ctx.createGain();
+  droneG.gain.value = 0.16;
+  droneF.connect(droneG).connect(gain);
+  const drones = [1, 1.007].map((det) => {
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = MUSIC_CHORDS[0].root * det;
+    o.connect(droneF);
+    o.start();
+    return o;
+  });
+  audio.music = { gain, drones, nextBar: ctx.currentTime + 0.15, bar: 0 };
+}
+function musicDrum(t, vol) {
+  const { ctx, noiseBuf, music } = audio;
+  const o = ctx.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(88, t);
+  o.frequency.exponentialRampToValueAtTime(42, t + 0.35);
+  const og = ctx.createGain();
+  og.gain.setValueAtTime(vol, t);
+  og.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+  o.connect(og).connect(music.gain);
+  o.start(t);
+  o.stop(t + 0.45);
+  const n = ctx.createBufferSource();
+  n.buffer = noiseBuf;
+  const nf = ctx.createBiquadFilter();
+  nf.type = 'lowpass';
+  nf.frequency.value = 320;
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(vol * 0.5, t);
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  n.connect(nf).connect(ng).connect(music.gain);
+  n.start(t);
+  n.stop(t + 0.15);
+}
+function scheduleMusicBar(t, bar) {
+  const { ctx, music } = audio;
+  const chord = MUSIC_CHORDS[(bar >> 1) % MUSIC_CHORDS.length];
+  if (bar % 2 === 0) {
+    // el drone se desliza al nuevo acorde; el pad respira encima (5 s, 2 compases)
+    for (const [i, o] of music.drones.entries()) {
+      o.frequency.exponentialRampToValueAtTime(chord.root * (i ? 1.007 : 1), t + 0.6);
+    }
+    for (const f of chord.notes) {
+      const o = ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.value = f;
+      const fl = ctx.createBiquadFilter();
+      fl.type = 'lowpass';
+      fl.frequency.value = 900;
+      const og = ctx.createGain();
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.exponentialRampToValueAtTime(0.05, t + 1.4);
+      og.gain.setValueAtTime(0.05, t + 3.6);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + 5.0);
+      o.connect(fl).connect(og).connect(music.gain);
+      o.start(t);
+      o.stop(t + 5.1);
+    }
+  }
+  musicDrum(t, 0.5);                 // BOOM al 1
+  musicDrum(t + 1.875, 0.2);         // eco al 3.5
+  if (bar % 4 === 3) {               // destello agudo espacial, muy de vez en cuando
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = [587.33, 659.25, 880][bar % 3];
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.035, t + 1.25);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
+    o.connect(og).connect(music.gain);
+    o.start(t + 1.25);
+    o.stop(t + 2.7);
+  }
 }
 function sfxExplosion(size, vol) {
   if (sfxMuted || !audio || vol <= 0) return;
@@ -943,7 +1062,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, fighters, swarm, get kills() { return kills; }, get t() { return clockTime; } };
+window.__sb = { capitals, damageCapital, fighters, swarm, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1110,6 +1229,18 @@ function update(dt) {
   if (audio) {
     audio.laserBudget = Math.min(3, audio.laserBudget + dt * 9); // máx ~9 láseres audibles/s
     if (player.dead) audio.engineGain.gain.setTargetAtTime(0, audio.ctx.currentTime, 0.3);
+    // música: planificar compases con antelación (compás de 2.5 s, ~96 BPM)
+    if (audio.music) {
+      const m = audio.music;
+      // si rAF se pausó sin visibilitychange (p.ej. panel embebido), saltar los
+      // compases perdidos: planificar en el pasado = ráfaga de tambores de golpe
+      if (m.nextBar < audio.ctx.currentTime) m.nextBar = audio.ctx.currentTime + 0.1;
+      while (m.nextBar < audio.ctx.currentTime + 0.8) {
+        scheduleMusicBar(m.nextBar, m.bar);
+        m.bar++;
+        m.nextBar += 2.5;
+      }
+    }
   }
 
   /* ---- vuelo del jugador ---- */
