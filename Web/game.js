@@ -757,6 +757,10 @@ function spawnFighter(faction, i, total) {
     obj, faction, vel: new THREE.Vector3(), hp: 3, alive: true,
     target: null, retarget: 0, nextShot: 2 + Math.random() * 2.5,
     orbitDir: Math.random() > 0.5 ? 1 : -1,
+    // serpenteo propio: frecuencia, fase y amplitud únicas por nave
+    weaveF: 0.5 + Math.random() * 0.8,
+    weavePh: Math.random() * Math.PI * 2,
+    weaveAmp: 0.35 + Math.random() * 0.4,
   });
 }
 for (let i = 0; i < ALLY_TOTAL; i++) spawnFighter('ally', i, ALLY_TOTAL);
@@ -851,6 +855,9 @@ for (const faction of ['ally', 'enemy']) {
       obj: new THREE.Object3D(), faction, slot: i,
       vel: new THREE.Vector3(), hp: 3, alive: true, target: null,
       retarget: 0, nextShot: 0, orbitDir: Math.random() > 0.5 ? 1 : -1,
+      weaveF: 0.5 + Math.random() * 0.9,
+      weavePh: Math.random() * Math.PI * 2,
+      weaveAmp: 0.35 + Math.random() * 0.45,
     };
     resetSwarmShip(s, true);
     swarm.push(s);
@@ -1314,7 +1321,7 @@ function endGame(victory) {
 
 /* ============================== bucle ============================== */
 const fwd = new THREE.Vector3(), tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3();
-const lookM = new THREE.Matrix4(), lookQ = new THREE.Quaternion();
+const lookM = new THREE.Matrix4(), lookQ = new THREE.Quaternion(), bankQ = new THREE.Quaternion();
 const segPrev = new THREE.Vector3(), segStep = new THREE.Vector3(), segTmp = new THREE.Vector3();
 
 /// ¿El segmento [p0, p0+step] pasa a menos de r del centro? (anti-túnel a bajo framerate)
@@ -1445,6 +1452,11 @@ function update(dt) {
       if (dist < 110) {
         desired.crossVectors(toTarget, f.obj.up).multiplyScalar(f.orbitDir).addScaledVector(toTarget, 0.15);
       }
+      // serpenteo: nadie vuela recto — curvas laterales y verticales propias
+      tv1.crossVectors(toTarget, f.obj.up).normalize();
+      const wv = Math.sin(t * f.weaveF + f.weavePh) * f.weaveAmp;
+      desired.addScaledVector(tv1, wv);
+      desired.y += Math.cos(t * f.weaveF * 0.7 + f.weavePh) * f.weaveAmp * 0.5;
       // separación de compañeros (evita el churro de naves apiladas)
       for (const other of fighters) {
         if (other === f || !other.alive) continue;
@@ -1458,7 +1470,11 @@ function update(dt) {
       if (f.vel.length() > 46) f.vel.setLength(46);
       f.obj.position.addScaledVector(f.vel, dt);
       lookM.lookAt(f.obj.position, f.target.obj.position, f.obj.up);
-      f.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), 1 - Math.exp(-3 * dt));
+      lookQ.setFromRotationMatrix(lookM);
+      // escora en el viraje: rueda sobre su eje según el empuje lateral
+      bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < 110 ? f.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
+      lookQ.multiply(bankQ);
+      f.obj.quaternion.slerp(lookQ, 1 - Math.exp(-3 * dt));
 
       f.nextShot -= dt;
       if (f.nextShot <= 0 && dist < 320) {
@@ -1504,12 +1520,20 @@ function update(dt) {
       toT.normalize();
       const desired = tmp2.copy(toT);
       if (dist < 90) desired.crossVectors(toT, s.obj.up).multiplyScalar(s.orbitDir).addScaledVector(toT, 0.2);
+      // serpenteo individual del enjambre — el cielo se llena de curvas
+      tv1.crossVectors(toT, s.obj.up).normalize();
+      const wv = Math.sin(t * s.weaveF + s.weavePh) * s.weaveAmp;
+      desired.addScaledVector(tv1, wv);
+      desired.y += Math.cos(t * s.weaveF * 0.7 + s.weavePh) * s.weaveAmp * 0.5;
       s.vel.addScaledVector(desired.normalize(), 24 * dt);
       s.vel.multiplyScalar(Math.exp(-0.5 * dt));
       if (s.vel.length() > 42) s.vel.setLength(42);
       s.obj.position.addScaledVector(s.vel, dt);
       lookM.lookAt(s.obj.position, s.target.obj.position, s.obj.up);
-      s.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), 1 - Math.exp(-2.5 * dt));
+      lookQ.setFromRotationMatrix(lookM);
+      bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < 90 ? s.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
+      lookQ.multiply(bankQ);
+      s.obj.quaternion.slerp(lookQ, 1 - Math.exp(-2.5 * dt));
 
       s.nextShot -= dt;
       if (s.nextShot <= 0 && dist < 260) {
