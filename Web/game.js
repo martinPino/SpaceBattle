@@ -292,9 +292,12 @@ function lockPointer() {
 }
 document.getElementById('startBtn').onclick = () => {
   document.getElementById('start').classList.add('hidden');
+  initAudio(); // el gesto del usuario desbloquea el audio del navegador
+  if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
   lockPointer();
   started = true;
 };
+document.getElementById('nextWaveBtn').onclick = () => startNextWave();
 renderer.domElement.addEventListener('click', () => {
   if (started && !document.pointerLockElement) lockPointer();
 });
@@ -305,6 +308,12 @@ document.addEventListener('pointerlockchange', () => {
 addEventListener('blur', () => {
   for (const k in keys) keys[k] = false;
   firing = false;
+});
+// pestaña oculta: rAF se pausa pero el AudioContext seguiría sonando (drone eterno)
+document.addEventListener('visibilitychange', () => {
+  if (!audio) return;
+  if (document.hidden) audio.ctx.suspend();
+  else audio.ctx.resume();
 });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -332,6 +341,7 @@ function fireLaser(origin, dir, speed, faction, isPlayer = false) {
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
   m.visible = true;
   lasers.push({ mesh: m, vel: dir.clone().multiplyScalar(speed), life: 2.2, faction, isPlayer });
+  sfxLaser(isPlayer ? 0.55 : gainFor(origin, 650) * 0.35);
 }
 
 /* ------------------------- destellos (POOL FIJO) -------------------------
@@ -367,6 +377,136 @@ function flash(pos, warm = false, size = 6, time = 0.18) {
   slot.life = time;
   slot.total = time;
   slot.grow = size * 2.4;
+}
+
+/* ============================== sonido ==============================
+   100% sintetizado con WebAudio — como los modelos: el audio también es código.
+   Presupuesto de láseres por segundo (184 tiradores ahí fuera) y atenuación
+   por distancia al jugador. Se inicia con el gesto del botón de inicio. */
+const AC = window.AudioContext || window.webkitAudioContext;
+let audio = null;
+let sfxMuted = false; // __sb.step() simula minutos en un instante: sin esto, cientos de nodos a la vez
+function initAudio() {
+  if (audio || !AC) return;
+  const ctx = new AC();
+  const master = ctx.createGain();
+  master.gain.value = 0.45;
+  master.connect(ctx.destination);
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  // motor: ruido en banda que sigue al acelerador
+  const engineSrc = ctx.createBufferSource();
+  engineSrc.buffer = noiseBuf;
+  engineSrc.loop = true;
+  const engineFilter = ctx.createBiquadFilter();
+  engineFilter.type = 'bandpass';
+  engineFilter.frequency.value = 110;
+  engineFilter.Q.value = 1.1;
+  const engineGain = ctx.createGain();
+  engineGain.gain.value = 0;
+  engineSrc.connect(engineFilter).connect(engineGain).connect(master);
+  engineSrc.start();
+  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2 };
+}
+function gainFor(pos, range) {
+  const d = pos.distanceTo(ship.position);
+  return d >= range ? 0 : 1 - d / range;
+}
+function sfxLaser(vol) {
+  if (sfxMuted || !audio || vol <= 0) return;
+  if (audio.laserBudget < 1) return;
+  audio.laserBudget -= 1;
+  const { ctx, master } = audio;
+  const t = ctx.currentTime;
+  const o = ctx.createOscillator();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(840 + Math.random() * 160, t);
+  o.frequency.exponentialRampToValueAtTime(150, t + 0.11);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.16 * vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  o.connect(g).connect(master);
+  o.start(t);
+  o.stop(t + 0.15);
+}
+function sfxExplosion(size, vol) {
+  if (sfxMuted || !audio || vol <= 0) return;
+  const { ctx, master, noiseBuf } = audio;
+  const t = ctx.currentTime;
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf;
+  const f = ctx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(900 * size, t);
+  f.frequency.exponentialRampToValueAtTime(60, t + 0.4 + 0.25 * size);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(Math.min(0.85, 0.4 * size) * vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.45 + 0.3 * size);
+  src.connect(f).connect(g).connect(master);
+  src.start(t);
+  src.stop(t + 0.5 + 0.3 * size);
+  if (size >= 2.5) { // subgrave para capitales
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(55, t);
+    o.frequency.exponentialRampToValueAtTime(26, t + 1.4);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.5 * vol, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
+    o.connect(og).connect(master);
+    o.start(t);
+    o.stop(t + 1.7);
+  }
+}
+function sfxMissile() {
+  if (sfxMuted || !audio) return;
+  const { ctx, master, noiseBuf } = audio;
+  const t = ctx.currentTime;
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf;
+  const f = ctx.createBiquadFilter();
+  f.type = 'bandpass';
+  f.Q.value = 2.5;
+  f.frequency.setValueAtTime(280, t);
+  f.frequency.exponentialRampToValueAtTime(1500, t + 0.45);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.4, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+  src.connect(f).connect(g).connect(master);
+  src.start(t);
+  src.stop(t + 0.6);
+}
+function sfxLock() {
+  if (sfxMuted || !audio) return;
+  const { ctx, master } = audio;
+  for (let i = 0; i < 2; i++) {
+    const t = ctx.currentTime + i * 0.09;
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = 1320;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.14, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    o.connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.08);
+  }
+}
+function sfxHit() {
+  if (sfxMuted || !audio) return;
+  const { ctx, master } = audio;
+  const t = ctx.currentTime;
+  const o = ctx.createOscillator();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(190, t);
+  o.frequency.exponentialRampToValueAtTime(60, t + 0.16);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.4, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  o.connect(g).connect(master);
+  o.start(t);
+  o.stop(t + 0.2);
 }
 
 /* ============================== escuadrones ============================== */
@@ -495,6 +635,7 @@ for (const faction of ['ally', 'enemy']) {
 function killSwarmShip(s, byPlayer) {
   s.alive = false;
   flash(s.obj.position, true, 22, 0.55);
+  sfxExplosion(1.2, gainFor(s.obj.position, 1400));
   if (s.faction === 'enemy') {
     if (byPlayer) message('SWARM FIGHTER DOWN');
     registerEnemyKill();
@@ -534,6 +675,7 @@ function damageFighter(f, dmg, atPos) {
   if (f.hp > 0 || !f.alive) return;
   f.alive = false;
   flash(f.obj.position, true, 26, 0.6);
+  sfxExplosion(1.5, gainFor(f.obj.position, 1500));
   scene.remove(f.obj);
   if (f.faction === 'enemy') {
     message('ENEMY INTERCEPTOR DOWN');
@@ -549,6 +691,56 @@ function registerEnemyKill() {
   kills++;
   hud.kills.textContent = kills;
   if (kills >= TOTAL_ENEMY_SHIPS) endGame(true);
+}
+
+/* -------------------- OLEADAS: la guerra no termina, se recrudece --------------------
+   Tras cada victoria puedes pedir la siguiente oleada: ambas flotas se rehacen,
+   te reabastecen (casco, escudo, misiles) y la puntería enemiga afina. Los pecios
+   de capital se quedan muertos: perder tu capital pasa factura para siempre. */
+let wave = 1, enemySpread = 0.14;
+function reviveFighter(f) {
+  const home = f.faction === 'ally' ? alliedCapital.position : enemyCapital.position;
+  f.obj.position.set(
+    home.x + (Math.random() - 0.5) * 900,
+    home.y + 150 + (Math.random() - 0.5) * 240,
+    home.z + (f.faction === 'ally' ? 350 : -350) + (Math.random() - 0.5) * 200,
+  );
+  f.vel.set(0, 0, 0);
+  f.hp = 3;
+  f.alive = true;
+  f.target = null;
+  f.retarget = Math.random() * 2;
+  f.nextShot = 2 + Math.random() * 2.5;
+  scene.add(f.obj);
+}
+function clearProjectiles() {
+  // los proyectiles de la oleada anterior no cruzan a la siguiente: un misil
+  // zombi re-fijaría al MISMO objeto de caza recién revivido (kill gratis)
+  for (const ms of missiles) scene.remove(ms.mesh);
+  missiles.length = 0;
+  for (const b of bolts) scene.remove(b.mesh);
+  bolts.length = 0;
+  for (const l of lasers) { l.mesh.visible = false; laserPool.push(l.mesh); }
+  lasers.length = 0;
+}
+function startNextWave() {
+  wave++;
+  enemySpread = Math.max(0.07, 0.14 - 0.02 * (wave - 1));
+  el('waveNum').textContent = wave;
+  kills = 0;
+  hud.kills.textContent = 0;
+  clearProjectiles();
+  for (const f of fighters) if (!f.alive) reviveFighter(f);
+  for (const s of swarm) if (!s.alive) resetSwarmShip(s, true);
+  player.shield = 100;
+  player.hull = 100;
+  player.dead = false;
+  missileAmmo = 8;
+  if (hud.missiles) hud.missiles.textContent = missileAmmo;
+  el('end').classList.add('hidden');
+  lockPointer();
+  sfxLock();
+  message(`WAVE ${wave} — ENEMY REINFORCEMENTS INBOUND`);
 }
 
 /* -------------------- misiles guiados (click derecho) -------------------- */
@@ -601,6 +793,8 @@ function launchMissile() {
     life: 9,
   });
   message(target ? 'MISSILE: TARGET LOCKED' : 'MISSILE: NO LOCK');
+  sfxMissile();
+  if (target) sfxLock();
 }
 
 /* -------------------- cañones de las capitales -------------------- */
@@ -665,7 +859,7 @@ function turretTick(cap, dt) {
     m.quaternion.setFromUnitVectors(zAxis, tv2);
     scene.add(m);
     bolts.push({ mesh: m, vel: tv2.clone().multiplyScalar(speed), life: 7, faction: cap.faction, kind: 'flak' });
-    tr.flakCool = 3 + Math.random() * 2.5;
+    tr.flakCool = (3 + Math.random() * 2.5) * (cap.faction === 'enemy' ? Math.pow(0.92, wave - 1) : 1);
   }
 }
 
@@ -713,6 +907,7 @@ function breakApartCapital(cap) {
   world.remove(cap.group);
   for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].cap === cap) colliders.splice(i, 1);
   flash(center, true, 340, 1.5);
+  sfxExplosion(4, Math.max(0.35, gainFor(center, 6000)));
   message(cap.faction === 'enemy' ? 'ENEMY CAPITAL DESTROYED' : 'ALLIED CAPITAL LOST');
 }
 
@@ -746,10 +941,92 @@ function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTim
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
 window.__sb = { capitals, damageCapital, fighters, swarm, get kills() { return kills; }, get t() { return clockTime; } };
 
+/* -------------------- radar 3D (estilo Elite) --------------------
+   Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
+   radar); la altura relativa se dibuja como un palito vertical desde el punto. */
+const radarC = el('radar'), rctx = radarC.getContext('2d');
+const arrowEl = el('enemyArrow');
+const RADAR_RANGE = 2200;
+const invQ = new THREE.Quaternion();
+function radarPlot(pos, color, big) {
+  tmp.copy(pos).sub(ship.position);
+  if (tmp.lengthSq() > RADAR_RANGE * RADAR_RANGE) return;
+  tmp.applyQuaternion(invQ);
+  const px = 110 + (tmp.x / RADAR_RANGE) * 96;
+  const py = 110 - (tmp.z / RADAR_RANGE) * 96;
+  const dy = -(tmp.y / RADAR_RANGE) * 96;
+  rctx.strokeStyle = color;
+  rctx.fillStyle = color;
+  if (Math.abs(dy) > 2.5) {
+    rctx.beginPath();
+    rctx.moveTo(px, py);
+    rctx.lineTo(px, py + dy);
+    rctx.stroke();
+  }
+  const r = big ? 3.4 : 1.8;
+  rctx.fillRect(px - r, py + dy - r, r * 2, r * 2);
+}
+function drawRadar() {
+  rctx.clearRect(0, 0, 220, 220);
+  rctx.fillStyle = 'rgba(3,10,16,0.62)'; // disco de fondo: legible sobre cualquier casco
+  rctx.beginPath(); rctx.arc(110, 110, 104, 0, Math.PI * 2); rctx.fill();
+  rctx.lineWidth = 1;
+  rctx.strokeStyle = 'rgba(127,231,255,0.22)';
+  rctx.beginPath(); rctx.arc(110, 110, 96, 0, Math.PI * 2); rctx.stroke();
+  rctx.beginPath(); rctx.arc(110, 110, 48, 0, Math.PI * 2); rctx.stroke();
+  rctx.beginPath();
+  rctx.moveTo(14, 110); rctx.lineTo(206, 110);
+  rctx.moveTo(110, 14); rctx.lineTo(110, 206);
+  rctx.stroke();
+  invQ.copy(ship.quaternion).invert();
+  for (const s of swarm) {
+    if (s.alive) radarPlot(s.obj.position, s.faction === 'ally' ? 'rgba(95,216,255,0.75)' : 'rgba(255,95,60,0.9)', false);
+  }
+  for (const f of fighters) {
+    if (f.alive) radarPlot(f.obj.position, f.faction === 'ally' ? '#8fe8ff' : '#ff7a4c', false);
+  }
+  for (const cap of [capitals.ally, capitals.enemy]) {
+    if (cap.alive) radarPlot(cap.group.position, cap.faction === 'ally' ? '#9ff0ff' : '#ffb04c', true);
+  }
+  rctx.fillStyle = '#ffffff';
+  rctx.fillRect(108.4, 108.4, 3.2, 3.2); // tú
+}
+
+/* flecha en pantalla hacia el enemigo más cercano (para cazar a los últimos) */
+function updateEnemyArrow() {
+  if (!started || player.dead) { arrowEl.style.opacity = 0; return; }
+  let best = null, bestD = Infinity;
+  for (const f of fighters) {
+    if (!f.alive || f.faction !== 'enemy') continue;
+    const d = ship.position.distanceToSquared(f.obj.position);
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  for (const s of swarm) {
+    if (!s.alive || s.faction !== 'enemy') continue;
+    const d = ship.position.distanceToSquared(s.obj.position);
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  if (!best) { arrowEl.style.opacity = 0; return; }
+  tmp.copy(best.obj.position).project(camera);
+  const behind = tmp.z > 1;
+  if (!behind && Math.abs(tmp.x) < 0.88 && Math.abs(tmp.y) < 0.82) {
+    arrowEl.style.opacity = 0; // el objetivo ya está a la vista
+    return;
+  }
+  let ax = tmp.x, ay = tmp.y;
+  if (behind) { ax = -ax; ay = -ay; }
+  const ang = Math.atan2(ay, ax);
+  const R = 92;
+  arrowEl.style.opacity = 0.9;
+  arrowEl.style.transform =
+    `translate(${Math.cos(ang) * R - 10}px, ${-Math.sin(ang) * R - 13}px) rotate(${90 - ang * 180 / Math.PI}deg)`;
+}
+
 function damagePlayer(amount) {
   if (player.dead || !started) return;
   if (player.shield > 0) player.shield = Math.max(0, player.shield - amount);
   else player.hull = Math.max(0, player.hull - amount * 0.8);
+  sfxHit();
   if (player.hull <= 0) endGame(false);
 }
 function endGame(victory) {
@@ -759,9 +1036,10 @@ function endGame(victory) {
   document.getElementById('start').classList.add('hidden');
   el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
-    ? `All ${TOTAL_ENEMY_SHIPS} enemy ships destroyed.<br>`
+    ? `Wave ${wave} cleared — all ${TOTAL_ENEMY_SHIPS} enemy ships destroyed.<br>`
       + (capitals.enemy.alive ? 'The enemy capital withdraws… for now.' : 'Their capital is drifting wreckage.')
     : 'Your hull gave out. Space is unforgiving.';
+  el('nextWaveBtn').classList.toggle('hidden', !victory);
   el('end').classList.remove('hidden');
 }
 
@@ -786,6 +1064,10 @@ function update(dt) {
   clockTime += dt;
   const t = clockTime;
   refreshColliders();
+  if (audio) {
+    audio.laserBudget = Math.min(3, audio.laserBudget + dt * 9); // máx ~9 láseres audibles/s
+    if (player.dead) audio.engineGain.gain.setTargetAtTime(0, audio.ctx.currentTime, 0.3);
+  }
 
   /* ---- vuelo del jugador ---- */
   if (!player.dead && started) {
@@ -824,6 +1106,11 @@ function update(dt) {
       fx.flame.scale.setScalar(0.6 + power * 3.4 + Math.sin(t * 31) * 0.18 * power);
       fx.flame.material.opacity = 0.25 + power * 0.6;
       fx.light.intensity = power * 9;
+    }
+    if (audio) { // el motor respira con el acelerador
+      const tt = audio.ctx.currentTime;
+      audio.engineGain.gain.setTargetAtTime(0.03 + power * 0.09, tt, 0.08);
+      audio.engineFilter.frequency.setTargetAtTime(90 + player.vel.length() * 2.4 + (boosting ? 160 : 0), tt, 0.1);
     }
 
     fireCooldown -= dt;
@@ -940,9 +1227,10 @@ function update(dt) {
       s.nextShot -= dt;
       if (s.nextShot <= 0 && dist < 260) {
         s.nextShot = 5 + Math.random() * 4; // 184 tiradores con impacto REAL: cadencia contenida
+        const spr = s.faction === 'enemy' ? enemySpread : 0.14; // cada oleada afina la puntería enemiga
         const dir = tmp.copy(s.target.obj.position).sub(s.obj.position).normalize();
-        dir.x += (Math.random() - 0.5) * 0.14;
-        dir.y += (Math.random() - 0.5) * 0.14;
+        dir.x += (Math.random() - 0.5) * spr;
+        dir.y += (Math.random() - 0.5) * spr;
         fireLaser(tmp2.copy(s.obj.position).addScaledVector(dir, 8), dir.normalize().clone(), 220, s.faction);
         // pincelada teatral residual: alguna ráfaga lejana conecta fuera de cámara
         if (Math.random() < 0.02) {
@@ -974,6 +1262,7 @@ function update(dt) {
       tv1.set((Math.random() - 0.5) * 240, (Math.random() - 0.5) * 150, (Math.random() - 0.5) * 2100);
       cap.group.localToWorld(tv1);
       flash(tv1, true, 18 + Math.random() * 40, 0.4);
+      if (Math.random() < 0.35) sfxExplosion(1 + Math.random(), gainFor(tv1, 3200) * 0.8);
     }
     if (cap.dying <= 0) breakApartCapital(cap);
   }
@@ -1008,6 +1297,7 @@ function update(dt) {
         if (segmentHitsSphere(segPrev, segStep, c.pos, c.r)) {
           damageCapital(b.targetCap, 16, b.mesh.position);
           flash(b.mesh.position, true, 30, 0.5);
+          sfxExplosion(1.3, gainFor(b.mesh.position, 1800) * 0.7);
           done = true; break;
         }
       }
@@ -1062,6 +1352,7 @@ function update(dt) {
         && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 12 * 12) {
       damageFighter(ms.target, 3, ms.mesh.position); // un misil, una baja
       flash(ms.mesh.position, true, 14, 0.35);
+      sfxExplosion(1.6, gainFor(ms.mesh.position, 1600));
       done = true;
     }
     if (!done) {
@@ -1201,8 +1492,14 @@ function update(dt) {
 function tick() {
   requestAnimationFrame(tick);
   update(Math.min(clock.getDelta(), 0.05));
+  drawRadar();          // solo una vez por frame RENDERIZADO (no en __sb.step)
+  updateEnemyArrow();
   renderer.render(scene, camera);
 }
 // simulación acelerada para pruebas: N segundos de batalla sin esperar al render
-window.__sb.step = (seconds) => { for (let i = 0, n = Math.round(seconds * 60); i < n; i++) update(1 / 60); };
+window.__sb.step = (seconds) => {
+  sfxMuted = true;
+  try { for (let i = 0, n = Math.round(seconds * 60); i < n; i++) update(1 / 60); }
+  finally { sfxMuted = false; }
+};
 tick();

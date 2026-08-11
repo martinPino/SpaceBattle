@@ -46,6 +46,11 @@
   .overlay .go:hover{background:#12242f}
   #msg{position:absolute;top:78px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
   .hidden{display:none !important}
+  /* radar 3D (estilo Elite): abajo al centro */
+  #radar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:132px;height:132px;opacity:.88}
+  body.touch #radar{width:96px;height:96px;bottom:10px}
+  /* flecha hacia el enemigo más cercano fuera de pantalla */
+  #enemyArrow{position:absolute;left:50%;top:50%;font-size:20px;color:#ff5a3c;text-shadow:0 0 6px #ff5a3c;opacity:0;transition:opacity .2s}
   /* ------- controles táctiles (solo en pantallas touch) ------- */
   html,body{touch-action:none;-webkit-user-select:none;user-select:none}
   #touchUI{display:none;position:fixed;inset:0;pointer-events:none;z-index:5}
@@ -79,12 +84,14 @@
     <div class="lbl">HULL</div><div class="bar" id="hullBar"><i></i></div>
   </div>
   <div id="vel"><b id="speed">0</b> m/s<br><span id="boost">◤ BOOST ◢</span></div>
-  <div id="kills">ENEMIES <b id="killCount">0</b>/<span id="killTotal">100</span> · ALLIES <b id="allyCount">100</b> · MISSILES <b id="missileCount">8</b></div>
+  <div id="kills">ENEMIES <b id="killCount">0</b>/<span id="killTotal">100</span> · ALLIES <b id="allyCount">100</b> · MISSILES <b id="missileCount">8</b> · WAVE <b id="waveNum">1</b></div>
   <div id="caps">
     <span>ALLIED CAPITAL</span><div class="bar" id="allyCapBar"><i></i></div>
     <span>ENEMY CAPITAL</span><div class="bar" id="enemyCapBar"><i></i></div>
   </div>
   <div id="msg"></div>
+  <canvas id="radar" width="220" height="220"></canvas>
+  <div id="enemyArrow">▲</div>
 </div>
 
 <div id="touchUI">
@@ -106,6 +113,7 @@
 <div class="overlay hidden" id="end">
   <h1 id="endTitle"></h1>
   <p id="endText"></p>
+  <button class="go hidden" id="nextWaveBtn">NEXT WAVE</button>
   <button class="go" onclick="location.reload()">FLY AGAIN</button>
 </div>
 
