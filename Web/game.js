@@ -411,8 +411,16 @@ function initAudio() {
   engineGain.gain.value = 0;
   engineSrc.connect(engineFilter).connect(engineGain).connect(master);
   engineSrc.start();
-  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2, music: null };
+  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2, music: null, laserBuf: null, explodeBuf: null };
   startMusic();
+  // samples del usuario; si alguno falla, queda el respaldo sintetizado
+  const loadSample = (url, key) => fetch(url)
+    .then((r) => r.arrayBuffer())
+    .then((buf) => ctx.decodeAudioData(buf))
+    .then((decoded) => { audio[key] = decoded; })
+    .catch(() => {});
+  loadSample('./assets/blaster-fire.mp3', 'laserBuf');
+  loadSample('./assets/ship-explode.mp3', 'explodeBuf');
 }
 function gainFor(pos, range) {
   const d = pos.distanceTo(ship.position);
@@ -424,8 +432,23 @@ function sfxLaser(vol) {
   audio.laserBudget -= 1;
   const { ctx, master, noiseBuf } = audio;
   const t = ctx.currentTime;
-  // "PYEW" tipo blaster de space-opera: barrido descendente pronunciado
-  // + parcial metálico + chasquido de ataque (el original era un cable de acero golpeado)
+  // sample del usuario para TODOS los bandos (el volumen ya trae la distancia);
+  // la cola de eco de 4.4 s se recorta a ~1.4 s — a cadencia de combate, cuarenta
+  // colas superpuestas serían una muralla de eco
+  if (audio.laserBuf) {
+    const src = ctx.createBufferSource();
+    src.buffer = audio.laserBuf;
+    src.playbackRate.value = 0.95 + Math.random() * 0.12; // cada disparo, su matiz
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.9 * vol, t);
+    g.gain.setValueAtTime(0.9 * vol, t + 1.0);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+    src.connect(g).connect(master);
+    src.start(t);
+    src.stop(t + 1.45);
+    return;
+  }
+  // respaldo sintetizado: "PYEW" tipo blaster de space-opera
   const o = ctx.createOscillator();
   o.type = 'sawtooth';
   o.frequency.setValueAtTime(2300 + Math.random() * 300, t);
@@ -557,6 +580,21 @@ function sfxExplosion(size, vol) {
   if (sfxMuted || !audio || vol <= 0) return;
   const { ctx, master, noiseBuf } = audio;
   const t = ctx.currentTime;
+  // sample del usuario para naves destruidas: cuanto mayor la nave, más grave.
+  // En capitales (size >= 2.5) suena POR DEBAJO del boom sintetizado con subgrave.
+  if (audio.explodeBuf) {
+    const src = ctx.createBufferSource();
+    src.buffer = audio.explodeBuf;
+    src.playbackRate.value = (0.92 + Math.random() * 0.16) / Math.sqrt(Math.min(size, 2.2));
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(Math.min(0.95, 0.55 * size) * vol, t);
+    g.gain.setValueAtTime(Math.min(0.95, 0.55 * size) * vol, t + 1.9);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 2.4);
+    src.connect(g).connect(master);
+    src.start(t);
+    src.stop(t + 2.45);
+    if (size < 2.5) return; // capital: sigue al boom sintetizado de abajo
+  }
   const src = ctx.createBufferSource();
   src.buffer = noiseBuf;
   const f = ctx.createBiquadFilter();
