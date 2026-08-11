@@ -318,12 +318,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) audio.ctx.suspend();
   else audio.ctx.resume();
 });
-addEventListener('resize', () => {
+function onResize() {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   sizeMarkers();
-});
+}
+addEventListener('resize', onResize);
+// iOS notifica el giro con dimensiones viejas: re-medir con retardo
+addEventListener('orientationchange', () => { setTimeout(onResize, 250); setTimeout(onResize, 700); });
 
 /* ============================== láseres ============================== */
 const laserGeo = new THREE.BoxGeometry(0.09, 0.09, 3.2);
@@ -1386,9 +1389,10 @@ function update(dt) {
     player.angVel.y += -mouseDX * 0.0022 * TUNE.mouseYaw;
     mouseDX = mouseDY = 0;
     // alabeo: Q/E en teclado; en táctil, las DIAGONALES del stick escoran la nave
-    // (x·|y| = cero en vertical u horizontal puros, máximo en las esquinas)
+    // (x·|y| = cero en vertical u horizontal puros, máximo en las esquinas;
+    // pulgar a la DERECHA = gira a la derecha)
     const rollIn = ((keys.KeyQ ? 1 : 0) - (keys.KeyE ? 1 : 0))
-      + (isTouch ? -touchStick.x * Math.abs(touchStick.y) * 2.8 : 0);
+      + (isTouch ? touchStick.x * Math.abs(touchStick.y) * 2.8 : 0);
     player.angVel.z += rollIn * TUNE.rollAccel * dt;
     player.angVel.multiplyScalar(Math.exp(-TUNE.angDamp * dt));
     ship.rotateX(player.angVel.x * dt);

@@ -76,6 +76,23 @@
     #caps .bar{width:56px}
     #vel b{font-size:22px}
   }
+  /* móvil APAISADO: poca altura — compactar todo para que nada se solape */
+  @media (max-height:470px){
+    #kills{top:8px;font-size:9px;width:96vw;text-align:center}
+    #caps{top:26px;font-size:8px;gap:5px}
+    #caps .bar{width:56px}
+    #msg{top:56px;font-size:10px}
+    .bar{width:110px;height:6px}
+    .lbl{font-size:8px}
+    body.touch #stats{top:40px;left:12px}
+    body.touch #vel{top:40px;right:12px}
+    #vel b{font-size:18px}
+    body.touch #radar{width:78px;height:78px;bottom:6px}
+    #fireBtn{width:86px;height:86px;left:14px;bottom:64px;font-size:10px}
+    #boostBtn{width:56px;height:56px;left:112px;bottom:88px;font-size:9px}
+    #missileBtn{width:70px;height:42px;left:22px;bottom:12px;font-size:9px}
+    #enemyArrow{font-size:16px}
+  }
 </style>
 </head>
 <body>
