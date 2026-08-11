@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -69,34 +69,34 @@
 <div id="hud">
   <div id="cross"><div class="ring"></div><div class="dot"></div></div>
   <div id="stats">
-    <div class="lbl">ESCUDO</div><div class="bar" id="shieldBar"><i></i></div>
-    <div class="lbl">CASCO</div><div class="bar" id="hullBar"><i></i></div>
+    <div class="lbl">SHIELD</div><div class="bar" id="shieldBar"><i></i></div>
+    <div class="lbl">HULL</div><div class="bar" id="hullBar"><i></i></div>
   </div>
-  <div id="vel"><b id="speed">0</b> m/s<br><span id="boost">◤ TURBO ◢</span></div>
-  <div id="kills">ENEMIGOS <b id="killCount">0</b>/<span id="killTotal">8</span> · ALIADOS <b id="allyCount">6</b> · MISILES <b id="missileCount">8</b></div>
+  <div id="vel"><b id="speed">0</b> m/s<br><span id="boost">◤ BOOST ◢</span></div>
+  <div id="kills">ENEMIES <b id="killCount">0</b>/<span id="killTotal">8</span> · ALLIES <b id="allyCount">6</b> · MISSILES <b id="missileCount">8</b></div>
   <div id="msg"></div>
 </div>
 
 <div id="touchUI">
   <div id="stickZone"><div id="stickBase"></div><div id="stickKnob"></div></div>
-  <button id="fireBtn">FUEGO</button>
-  <button id="boostBtn">TURBO</button>
-  <button id="missileBtn">MISIL</button>
+  <button id="fireBtn">FIRE</button>
+  <button id="boostBtn">BOOST</button>
+  <button id="missileBtn">MISSILE</button>
 </div>
 
 <div class="overlay" id="start">
   <h1>SPACE BATTLE</h1>
-  <p>Ratón — orientar la nave · <b>W/S</b> acelerar/frenar · <b>A/D</b> lateral · <b>R/F</b> vertical<br>
-  <b>Q/E</b> alabeo · <b>Shift</b> turbo · <b>Espacio / click izq.</b> — láseres · <b>click der.</b> — misil guiado<br><br>
-  Batalla de flotas: tu escuadrón contra el suyo, capital contra capital.<br>
-  Aniquila al escuadrón enemigo.</p>
-  <button class="go" id="startBtn">ENTRAR EN CABINA</button>
+  <p>Mouse — steer the ship · <b>W/S</b> throttle/brake · <b>A/D</b> strafe · <b>R/F</b> vertical<br>
+  <b>Q/E</b> roll · <b>Shift</b> boost · <b>Space / left click</b> — lasers · <b>right click</b> — guided missile<br><br>
+  Fleet battle: your squadron against theirs, capital against capital.<br>
+  Wipe out the enemy squadron.</p>
+  <button class="go" id="startBtn">ENTER COCKPIT</button>
 </div>
 
 <div class="overlay hidden" id="end">
   <h1 id="endTitle"></h1>
   <p id="endText"></p>
-  <button class="go" onclick="location.reload()">OTRA SALIDA</button>
+  <button class="go" onclick="location.reload()">FLY AGAIN</button>
 </div>
 
 <script type="module" src="./game.js"></script>

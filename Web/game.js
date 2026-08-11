@@ -448,7 +448,7 @@ const swarmRespawns = []; // { ship, at }
 function killSwarmShip(s, byPlayer) {
   s.alive = false;
   flash(s.obj.position, true, 22, 0.55);
-  if (byPlayer) message('CAZA DEL ENJAMBRE DERRIBADO');
+  if (byPlayer) message('SWARM FIGHTER DOWN');
   // refuerzos: el mismo hueco de instancia vuelve a despegar del hangar
   swarmRespawns.push({ ship: s, at: clockTime + 6 + Math.random() * 6 });
 }
@@ -489,10 +489,10 @@ function damageFighter(f, dmg, atPos) {
   scene.remove(f.obj);
   if (f.faction === 'enemy') {
     kills++; hud.kills.textContent = kills;
-    message('INTERCEPTOR ENEMIGO DERRIBADO');
+    message('ENEMY INTERCEPTOR DOWN');
     if (kills >= ENEMY_TOTAL) endGame(true);
   } else {
-    message('HEMOS PERDIDO UN CAZA ALIADO');
+    message('ALLIED FIGHTER LOST');
   }
 }
 
@@ -537,7 +537,7 @@ function launchMissile() {
     vel: fwd.clone().multiplyScalar(Math.max(60, player.vel.length() + 40)),
     life: 9,
   });
-  message(target ? 'MISIL: OBJETIVO FIJADO' : 'MISIL SIN FIJACIÓN');
+  message(target ? 'MISSILE: TARGET LOCKED' : 'MISSILE: NO LOCK');
 }
 
 /* -------------------- fuego de torretas entre capitales -------------------- */
@@ -596,10 +596,10 @@ function endGame(victory) {
   player.dead = true;
   document.exitPointerLock();
   document.getElementById('start').classList.add('hidden');
-  el('endTitle').textContent = victory ? 'VICTORIA' : 'NAVE PERDIDA';
+  el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
-    ? `El escuadrón enemigo ha sido aniquilado.<br>La capital enemiga se retira… por ahora.`
-    : 'El casco no aguantó. El espacio no perdona.';
+    ? `The enemy squadron has been wiped out.<br>The enemy capital withdraws… for now.`
+    : 'Your hull gave out. Space is unforgiving.';
   el('end').classList.remove('hidden');
 }
 
@@ -684,7 +684,7 @@ function tick() {
         player.vel.reflect(push).multiplyScalar(0.35);
         damagePlayer(impact * 0.8);
         flash(ship.position.clone().addScaledVector(push, -player.radius), true, 8, 0.3);
-        message('¡IMPACTO CONTRA EL CASCO!');
+        message('HULL COLLISION!');
       }
     }
 
