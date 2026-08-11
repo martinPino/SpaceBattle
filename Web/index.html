@@ -46,6 +46,8 @@
   .overlay .go:hover{background:#12242f}
   #msg{position:absolute;top:78px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
   .hidden{display:none !important}
+  /* marcadores de enemigos: capa a pantalla completa bajo el resto del HUD */
+  #markers{position:absolute;inset:0;width:100%;height:100%}
   /* radar 3D (estilo Elite): abajo al centro */
   #radar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:132px;height:132px;opacity:.88}
   body.touch #radar{width:96px;height:96px;bottom:10px}
@@ -78,6 +80,7 @@
 </head>
 <body>
 <div id="hud">
+  <canvas id="markers"></canvas>
   <div id="cross"><div class="ring"></div><div class="dot"></div></div>
   <div id="stats">
     <div class="lbl">SHIELD</div><div class="bar" id="shieldBar"><i></i></div>

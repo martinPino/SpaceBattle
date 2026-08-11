@@ -38,25 +38,28 @@ const sunDir = sun.position.clone().normalize();
 /* --------- decorado lejano (modelos del kit, escala de escena) --------- */
 const world = new THREE.Group();
 scene.add(world);
-const dome = buildStarfieldDome({ radius: 9000, count: 6000 });
+// escala MAJESTUOSA: planetas mucho más grandes y mucho más lejos — dominan
+// el horizonte sin estorbar la batalla (el domo crece con ellos; sus estrellas
+// mantienen el tamaño aparente porque el kit las escala con el radio)
+const dome = buildStarfieldDome({ radius: 22000, count: 6000 });
 world.add(dome);
-const star = buildStar({ radius: 260 });
-star.position.copy(sunDir.clone().multiplyScalar(8500));
+const star = buildStar({ radius: 430 });
+star.position.copy(sunDir.clone().multiplyScalar(14000));
 world.add(star);
-const earth = buildPlanetEarthLike({ radius: 300 });
-earth.position.set(-2600, 300, 2800);
+const earth = buildPlanetEarthLike({ radius: 1500 });
+earth.position.set(-7800, 900, 8400);
 world.add(earth);
-const ringed = buildPlanetRinged({ radius: 260 });
-ringed.position.set(2900, -700, -3400);
+const ringed = buildPlanetRinged({ radius: 1300 });
+ringed.position.set(8700, -2100, -10200);
 world.add(ringed);
-const gas = buildPlanetGasGiant({ radius: 500 });
-gas.position.set(4200, 1300, 5200);
+const gas = buildPlanetGasGiant({ radius: 2600 });
+gas.position.set(12600, 3900, 15600);
 world.add(gas);
-const moon = buildMoonRocky({ radius: 60 });
-moon.position.set(-1500, -260, 1500);
+const moon = buildMoonRocky({ radius: 280 });
+moon.position.set(-4500, -800, 4500);
 world.add(moon);
-const nebula = buildNebula({ extent: 1600, puffs: 90 });
-nebula.position.set(-4200, 700, -5200);
+const nebula = buildNebula({ extent: 2600, puffs: 90 });
+nebula.position.set(-9000, 1500, -11000);
 world.add(nebula);
 
 /* ============================== facciones ============================== */
@@ -200,8 +203,8 @@ const player = {
   shield: 100, hull: 100, dead: false, radius: 6,
 };
 const TUNE = {
-  accel: 45, maxSpeed: 60, boostSpeed: 115, boostAccel: 90,
-  strafe: 30, vertical: 30,
+  accel: 70, maxSpeed: 95, boostSpeed: 190, boostAccel: 160,
+  strafe: 45, vertical: 45,
   mousePitch: 2.6, mouseYaw: 2.1, rollAccel: 6.5,
   linDamp: 0.6, angDamp: 4.5,
 };
@@ -319,6 +322,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  sizeMarkers();
 });
 
 /* ============================== láseres ============================== */
@@ -789,7 +793,7 @@ function launchMissile() {
   scene.add(m);
   missiles.push({
     mesh: m, target,
-    vel: fwd.clone().multiplyScalar(Math.max(60, player.vel.length() + 40)),
+    vel: fwd.clone().multiplyScalar(Math.max(90, player.vel.length() + 50)),
     life: 9,
   });
   message(target ? 'MISSILE: TARGET LOCKED' : 'MISSILE: NO LOCK');
@@ -990,6 +994,45 @@ function drawRadar() {
   }
   rctx.fillStyle = '#ffffff';
   rctx.fillRect(108.4, 108.4, 3.2, 3.2); // tú
+}
+
+/* -------- marcadores de enemigos: brackets rojos sobre cada nave hostil --------
+   Identificación instantánea amigo/enemigo: solo los hostiles llevan marco. */
+const markC = el('markers'), mctx = markC.getContext('2d');
+function sizeMarkers() { markC.width = innerWidth; markC.height = innerHeight; }
+sizeMarkers();
+function drawMarkers() {
+  mctx.clearRect(0, 0, markC.width, markC.height);
+  if (!started || player.dead) return;
+  mctx.lineWidth = 1.5;
+  const mark = (pos, big) => {
+    const d = pos.distanceTo(ship.position);
+    // cerca gritan, lejos susurran: 92 hostiles con brackets a tope = muro de ruido
+    if (!big && (d > 2400 || d < 22)) return;
+    tmp.copy(pos).project(camera);
+    if (tmp.z > 1 || Math.abs(tmp.x) > 1.05 || Math.abs(tmp.y) > 1.05) return;
+    const sx = (tmp.x + 1) / 2 * markC.width;
+    const sy = (1 - tmp.y) / 2 * markC.height;
+    const s = big ? 34 : THREE.MathUtils.clamp(6500 / d, 4, 26);
+    const alpha = big ? 0.8 : THREE.MathUtils.clamp(1.1 - d / 2400, 0.12, 0.85);
+    mctx.strokeStyle = `rgba(255,90,60,${alpha})`;
+    const c = s * 0.4;
+    mctx.beginPath();
+    mctx.moveTo(sx - s, sy - s + c); mctx.lineTo(sx - s, sy - s); mctx.lineTo(sx - s + c, sy - s);
+    mctx.moveTo(sx + s - c, sy - s); mctx.lineTo(sx + s, sy - s); mctx.lineTo(sx + s, sy - s + c);
+    mctx.moveTo(sx + s, sy + s - c); mctx.lineTo(sx + s, sy + s); mctx.lineTo(sx + s - c, sy + s);
+    mctx.moveTo(sx - s + c, sy + s); mctx.lineTo(sx - s, sy + s); mctx.lineTo(sx - s, sy + s - c);
+    mctx.stroke();
+    if (big) {
+      mctx.fillStyle = `rgba(255,140,100,${alpha})`;
+      mctx.font = '10px monospace';
+      mctx.textAlign = 'center';
+      mctx.fillText('CAPITAL', sx, sy - s - 6);
+    }
+  };
+  for (const f of fighters) if (f.alive && f.faction === 'enemy') mark(f.obj.position, false);
+  for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false);
+  if (capitals.enemy.alive) mark(capitals.enemy.group.position, true);
 }
 
 /* flecha en pantalla hacia el enemigo más cercano (para cazar a los últimos) */
@@ -1340,7 +1383,7 @@ function update(dt) {
     if (hasTarget) {
       // persecución con giro limitado: alcanzable, pero esquivable
       tmp.copy(ms.target.obj.position).sub(ms.mesh.position).normalize();
-      const speed = Math.min(175, ms.vel.length() + 90 * dt);
+      const speed = Math.min(240, ms.vel.length() + 130 * dt); // más rápido que tu turbo: no te adelantas a tu propio misil
       ms.vel.lerp(tmp.multiplyScalar(speed), 1 - Math.exp(-2.6 * dt));
       ms.mesh.quaternion.setFromUnitVectors(tmp.set(0, 0, 1), tmp2.copy(ms.vel).normalize());
     }
@@ -1493,6 +1536,7 @@ function tick() {
   requestAnimationFrame(tick);
   update(Math.min(clock.getDelta(), 0.05));
   drawRadar();          // solo una vez por frame RENDERIZADO (no en __sb.step)
+  drawMarkers();
   updateEnemyArrow();
   renderer.render(scene, camera);
 }
