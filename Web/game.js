@@ -411,16 +411,49 @@ function initAudio() {
   engineGain.gain.value = 0;
   engineSrc.connect(engineFilter).connect(engineGain).connect(master);
   engineSrc.start();
-  audio = { ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2, music: null, laserBuf: null, explodeBuf: null };
-  startMusic();
+  audio = {
+    ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2,
+    music: null, musicTrack: null, laserBuf: null, explodeBuf: null, shieldBuf: null, musicTrackBuf: null,
+  };
   // samples del usuario; si alguno falla, queda el respaldo sintetizado
-  const loadSample = (url, key) => fetch(url)
+  const loadSample = (url, key, onOk, onFail) => fetch(url)
     .then((r) => r.arrayBuffer())
     .then((buf) => ctx.decodeAudioData(buf))
-    .then((decoded) => { audio[key] = decoded; })
-    .catch(() => {});
+    .then((decoded) => { audio[key] = decoded; onOk && onOk(); })
+    .catch(() => { onFail && onFail(); });
   loadSample('./assets/blaster-fire.mp3', 'laserBuf');
   loadSample('./assets/ship-explode.mp3', 'explodeBuf');
+  loadSample('./assets/shield-down.mp3', 'shieldBuf');
+  loadSample('./assets/battle-music.mp3', 'musicTrackBuf',
+    () => startUserMusic(),  // la pista del usuario, en bucle perfecto
+    () => startMusic());     // sin pista: banda sonora generativa de respaldo
+}
+
+// música del usuario en bucle sin costuras para toda la partida
+function startUserMusic() {
+  if (!audio || audio.musicTrack) return;
+  const { ctx, master } = audio;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.42; // presente, pero los efectos mandan
+  gain.connect(master);
+  const src = ctx.createBufferSource();
+  src.buffer = audio.musicTrackBuf;
+  src.loop = true;
+  src.connect(gain);
+  src.start();
+  audio.musicTrack = { src, gain };
+}
+
+// alarma al romperse el escudo del jugador
+function sfxShieldDown() {
+  if (sfxMuted || !audio || !audio.shieldBuf) return;
+  const { ctx, master } = audio;
+  const src = ctx.createBufferSource();
+  src.buffer = audio.shieldBuf;
+  const g = ctx.createGain();
+  g.gain.value = 0.85;
+  src.connect(g).connect(master);
+  src.start();
 }
 function gainFor(pos, range) {
   const d = pos.distanceTo(ship.position);
@@ -1224,8 +1257,13 @@ function updateEnemyArrow() {
 
 function damagePlayer(amount) {
   if (player.dead || !started) return;
+  const hadShield = player.shield > 0;
   if (player.shield > 0) player.shield = Math.max(0, player.shield - amount);
   else player.hull = Math.max(0, player.hull - amount * 0.8);
+  if (hadShield && player.shield <= 0) { // el golpe que lo rompe (también tras regenerar)
+    sfxShieldDown();
+    message('SHIELD DOWN');
+  }
   sfxHit();
   if (player.hull <= 0) endGame(false);
 }
