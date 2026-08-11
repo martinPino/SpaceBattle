@@ -1,0 +1,112 @@
+SPACE ASSET KIT - generation report
+==============================================================
+
+ASSET      : SHIP_Player_Fighter_01
+  seed     : 1001
+  vertices : 2654
+  triangles: 5144
+  materials: MAT_Cockpit_Glass, MAT_Emissive_Cyan, MAT_Emissive_EngineCore, MAT_Hull_Black, MAT_Hull_Dark, MAT_Hull_Light, MAT_Hull_Mid, MAT_NavLight_Green, MAT_NavLight_Red
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Ships/SHIP_Player_Fighter_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Ships/SHIP_Player_Fighter_01.glb
+  notas    : caza ligero 12m, 20 partes, empties Unity
+
+ASSET      : SHIP_Enemy_Interceptor_01
+  seed     : 2001
+  vertices : 426
+  triangles: 800
+  materials: MAT_Cockpit_Glass, MAT_Emissive_EngineCore_Red, MAT_Emissive_Red, MAT_Hull_Black, MAT_Hull_Dark, MAT_Hull_Mid
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Ships/SHIP_Enemy_Interceptor_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Ships/SHIP_Enemy_Interceptor_01.glb
+  notas    : interceptor enemigo 8m, emissive rojo
+
+ASSET      : ENV_Planet_EarthLike_01
+  seed     : 4211
+  vertices : 59734
+  triangles: 119448
+  materials: MAT_Atmosphere_ENV_Planet_EarthLike_01, MAT_Clouds_4211, MAT_Planet_EarthLike_4211
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_EarthLike_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_EarthLike_01.glb
+  notas    : oceano 0.52, nubes 0.55, atmosfera fresnel
+
+ASSET      : ENV_Planet_GasGiant_01
+  seed     : 9021
+  vertices : 14779
+  triangles: 29542
+  materials: MAT_Atmosphere_ENV_Planet_GasGiant_01, MAT_GasGiant_9021
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_GasGiant_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_GasGiant_01.glb
+  notas    : bandas + tormenta, sin superficie rocosa
+
+ASSET      : ENV_Planet_Ringed_01
+  seed     : 3307
+  vertices : 16229
+  triangles: 31794
+  materials: MAT_Atmosphere_ENV_Planet_Ringed_01, MAT_GasGiant_Ringed_3307, MAT_Ring_Band_01, MAT_Ring_Band_02, MAT_Ring_Band_03, MAT_Ring_Band_04
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_Ringed_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Planet_Ringed_01.glb
+  notas    : 4 bandas de anillos con separaciones
+
+ASSET      : ENV_Moon_Rocky_01
+  seed     : 5150
+  vertices : 918
+  triangles: 1820
+  materials: MAT_Moon_Rocky
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Moon_Rocky_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Planets/ENV_Moon_Rocky_01.glb
+  notas    : luna Rocky, 48 crateres
+
+ASSET      : ENV_Star_Yellow_01
+  seed     : 777
+  vertices : 14184
+  triangles: 28352
+  materials: MAT_Star_Corona_Yellow_1, MAT_Star_Corona_Yellow_2, MAT_Star_Corona_Yellow_3, MAT_Star_Prominence_Yellow, MAT_Star_Yellow
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Stars/ENV_Star_Yellow_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Stars/ENV_Star_Yellow_01.glb
+  notas    : granulacion, manchas, corona 3 capas, 7 prominencias
+
+ASSET      : ENV_AsteroidField_01
+  seed     : 2024
+  vertices : 0
+  triangles: 0
+  materials: MAT_Rock_Rocky, MAT_Rock_Dark
+  files    : 
+  notas    : 60 instancias, radio 800m, 4 prototipos
+
+ASSET      : ENV_Nebula_Blue_01
+  seed     : 611
+  vertices : 104
+  triangles: 52
+  materials: MAT_Nebula_BB_Blue
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Nebula_Blue_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Nebula_Blue_01.glb
+  notas    : 26 billboards aditivos, extension 3500m
+
+ASSET      : ENV_Galaxy_Spiral_01
+  seed     : 811
+  vertices : 318
+  triangles: 626
+  materials: MAT_Galaxy_Core, MAT_Galaxy_Halo
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Galaxy_Spiral_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Galaxy_Spiral_01.glb
+  notas    : Spiral: 6000 puntos + nucleo + halo billboard
+
+ASSET      : PROP_SpaceStation_01
+  seed     : 5001
+  vertices : 1322
+  triangles: 2452
+  materials: MAT_Emissive_Amber, MAT_Emissive_Cyan, MAT_Hull_Black, MAT_Hull_Dark, MAT_Hull_Light, MAT_Hull_Mid
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Stations/PROP_SpaceStation_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Stations/PROP_SpaceStation_01.glb
+  notas    : 11 modulos combinables, 6 colliders
+
+ASSET      : ENV_Comet_01
+  seed     : 6200
+  vertices : 2570
+  triangles: 5124
+  materials: MAT_Comet_Tail_1, MAT_Comet_Tail_2, MAT_Rock_Ice
+  files    : /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Comet_01.fbx
+             /Users/martin.schwarzboeck/SpaceBattle/Assets/Game/Models/Generated/Environment/ENV_Comet_01.glb
+  notas    : nucleo helado r=18m + 2 colas
+
+total assets: 12
+total triangulos: 225154

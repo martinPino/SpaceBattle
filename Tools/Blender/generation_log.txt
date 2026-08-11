@@ -1,0 +1,16 @@
+OK   SHIP_Player_Fighter_01                   0.3s
+OK   SHIP_Enemy_Interceptor_01                0.0s
+OK   ENV_Planet_EarthLike_01                  0.9s
+OK   ENV_Planet_GasGiant_01                   0.2s
+OK   ENV_Planet_Ringed_01                     0.4s
+OK   ENV_Moon_Rocky_01                        0.3s
+OK   ENV_Star_Yellow_01                       0.1s
+OK   ENV_Asteroid_Medium_01                   0.0s
+OK   ENV_Asteroid_Large_01                    0.1s
+OK   ENV_AsteroidField_01                     0.0s
+OK   ENV_Nebula_Blue_01                       0.0s
+OK   ENV_Galaxy_Spiral_01                     0.0s
+OK   PROP_SpaceStation_01                     0.1s
+OK   ENV_Comet_01                             0.0s
+
+total 2.6s

@@ -1,0 +1,19 @@
+# Unity — regenerables
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+*.csproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+
+# SO
+.DS_Store
+
+# Claude local
+.claude/

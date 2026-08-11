@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Space Battle — Web</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:'JetBrains Mono','SF Mono',Menlo,monospace;color:#cfe6f5}
+  canvas{display:block}
+  #hud{position:fixed;inset:0;pointer-events:none;user-select:none}
+  /* crosshair */
+  #cross{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:44px;height:44px}
+  #cross .dot{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;background:#7fe7ff;border-radius:50%}
+  #cross .ring{position:absolute;inset:0;border:1px solid rgba(127,231,255,.5);border-radius:50%}
+  /* lower-left: estado */
+  #stats{position:absolute;left:22px;bottom:18px;font-size:12px;line-height:1.9;letter-spacing:.05em}
+  .bar{width:190px;height:8px;background:#0b1620;border:1px solid #14303f;border-radius:3px;overflow:hidden;margin:2px 0 8px}
+  .bar i{display:block;height:100%;background:#39d6ff;width:100%;transition:width .12s}
+  #hullBar i{background:#ff9a3c}
+  .lbl{color:#5b7c92;font-size:10px;letter-spacing:.18em}
+  /* lower-right: velocidad */
+  #vel{position:absolute;right:26px;bottom:18px;text-align:right;font-size:12px;line-height:1.8}
+  #vel b{font-size:30px;color:#7fe7ff;font-weight:500}
+  #boost{color:#ffd27f;opacity:0;transition:opacity .15s}
+  /* top-center: bajas */
+  #kills{position:absolute;top:16px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.22em;color:#8fb2c6}
+  #kills b{color:#7fe7ff}
+  /* overlays */
+  .overlay{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(2,6,10,.82);backdrop-filter:blur(3px);pointer-events:all;text-align:center}
+  .overlay h1{margin:0;font-size:26px;letter-spacing:.3em;font-weight:500;color:#7fe7ff}
+  .overlay p{margin:0;font-size:12px;line-height:2;color:#8fa9bc;letter-spacing:.06em}
+  .overlay .go{margin-top:10px;padding:10px 26px;border:1px solid #2b6f85;border-radius:4px;color:#aef;cursor:pointer;font-family:inherit;font-size:13px;letter-spacing:.2em;background:#0c1a24}
+  .overlay .go:hover{background:#12242f}
+  #msg{position:absolute;top:56px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
+  .hidden{display:none !important}
+  /* ------- controles táctiles (solo en pantallas touch) ------- */
+  html,body{touch-action:none;-webkit-user-select:none;user-select:none}
+  #touchUI{display:none;position:fixed;inset:0;pointer-events:none;z-index:5}
+  body.touch #touchUI{display:block}
+  body.touch #cross .ring{border-color:rgba(127,231,255,.35)}
+  #stickZone{position:absolute;right:0;bottom:0;width:46%;height:60%;pointer-events:all}
+  #stickBase{position:absolute;width:124px;height:124px;border:2px solid rgba(127,231,255,.35);border-radius:50%;background:rgba(10,25,35,.25);display:none}
+  #stickKnob{position:absolute;width:56px;height:56px;border-radius:50%;background:rgba(127,231,255,.5);display:none}
+  #fireBtn{position:absolute;left:22px;bottom:96px;width:110px;height:110px;border-radius:50%;border:2px solid rgba(127,231,255,.5);background:rgba(20,50,70,.35);color:#aef;font-family:inherit;font-size:12px;letter-spacing:.15em;pointer-events:all}
+  #fireBtn:active{background:rgba(60,160,220,.5)}
+  #boostBtn{position:absolute;left:150px;bottom:130px;width:74px;height:74px;border-radius:50%;border:2px solid rgba(255,210,127,.55);background:rgba(70,50,15,.35);color:#ffd27f;font-family:inherit;font-size:10px;letter-spacing:.12em;pointer-events:all}
+  #boostBtn:active{background:rgba(220,160,60,.5)}
+  #missileBtn{position:absolute;left:36px;bottom:24px;width:84px;height:56px;border-radius:28px;border:2px solid rgba(255,140,90,.55);background:rgba(70,30,15,.35);color:#ff9a6c;font-family:inherit;font-size:10px;letter-spacing:.12em;pointer-events:all}
+  #missileBtn:active{background:rgba(220,90,50,.5)}
+  body.touch #stats{bottom:auto;top:52px}
+  body.touch #vel{bottom:auto;top:52px}
+  @media (max-width:720px){
+    #kills{font-size:10px;width:92vw;text-align:center}
+    .bar{width:130px}
+    #vel b{font-size:22px}
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="cross"><div class="ring"></div><div class="dot"></div></div>
+  <div id="stats">
+    <div class="lbl">ESCUDO</div><div class="bar" id="shieldBar"><i></i></div>
+    <div class="lbl">CASCO</div><div class="bar" id="hullBar"><i></i></div>
+  </div>
+  <div id="vel"><b id="speed">0</b> m/s<br><span id="boost">◤ TURBO ◢</span></div>
+  <div id="kills">ENEMIGOS <b id="killCount">0</b>/<span id="killTotal">8</span> · ALIADOS <b id="allyCount">6</b> · MISILES <b id="missileCount">8</b></div>
+  <div id="msg"></div>
+</div>
+
+<div id="touchUI">
+  <div id="stickZone"><div id="stickBase"></div><div id="stickKnob"></div></div>
+  <button id="fireBtn">FUEGO</button>
+  <button id="boostBtn">TURBO</button>
+  <button id="missileBtn">MISIL</button>
+</div>
+
+<div class="overlay" id="start">
+  <h1>SPACE BATTLE</h1>
+  <p>Ratón — orientar la nave · <b>W/S</b> acelerar/frenar · <b>A/D</b> lateral · <b>R/F</b> vertical<br>
+  <b>Q/E</b> alabeo · <b>Shift</b> turbo · <b>Espacio / click izq.</b> — láseres · <b>click der.</b> — misil guiado<br><br>
+  Batalla de flotas: tu escuadrón contra el suyo, capital contra capital.<br>
+  Aniquila al escuadrón enemigo.</p>
+  <button class="go" id="startBtn">ENTRAR EN CABINA</button>
+</div>
+
+<div class="overlay hidden" id="end">
+  <h1 id="endTitle"></h1>
+  <p id="endText"></p>
+  <button class="go" onclick="location.reload()">OTRA SALIDA</button>
+</div>
+
+<script type="module" src="./game.js"></script>
+</body>
+</html>
