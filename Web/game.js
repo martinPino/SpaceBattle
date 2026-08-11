@@ -424,6 +424,7 @@ function initAudio() {
   loadSample('./assets/blaster-fire.mp3', 'laserBuf');
   loadSample('./assets/ship-explode.mp3', 'explodeBuf');
   loadSample('./assets/shield-down.mp3', 'shieldBuf');
+  loadSample('./assets/flyby.mp3', 'flybyBuf');
   loadSample('./assets/battle-music.mp3', 'musicTrackBuf',
     () => startUserMusic(),  // la pista del usuario, en bucle perfecto
     () => startMusic());     // sin pista: banda sonora generativa de respaldo
@@ -442,6 +443,36 @@ function startUserMusic() {
   src.connect(gain);
   src.start();
   audio.musicTrack = { src, gain };
+}
+
+// whoosh de pasada cercana: una nave cruza rozándote a velocidad
+let flybyCool = 0;
+function sfxFlyby(vol) {
+  if (sfxMuted || !audio || !audio.flybyBuf) return;
+  const { ctx, master } = audio;
+  const src = ctx.createBufferSource();
+  src.buffer = audio.flybyBuf;
+  src.playbackRate.value = 0.94 + Math.random() * 0.14;
+  const g = ctx.createGain();
+  g.gain.value = 0.7 * vol;
+  src.connect(g).connect(master);
+  src.start();
+}
+function checkFlybys(dt) {
+  flybyCool -= dt;
+  if (flybyCool > 0 || player.dead || !started) return;
+  const R2 = 52 * 52;
+  const near = (e) => {
+    const d2 = e.obj.position.distanceToSquared(ship.position);
+    if (d2 > R2) return false;
+    segTmp.copy(e.vel).sub(player.vel); // velocidad relativa: pasada, no escolta
+    if (segTmp.lengthSq() < 34 * 34) return false;
+    flybyCool = 2.8 + Math.random() * 1.5;
+    sfxFlyby(THREE.MathUtils.clamp(1.25 - Math.sqrt(d2) / 52, 0.45, 1));
+    return true;
+  };
+  for (const f of fighters) if (f.alive && near(f)) return;
+  for (const s of swarm) if (s.alive && near(s)) return;
 }
 
 // alarma al romperse el escudo del jugador
@@ -1133,7 +1164,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; } };
+window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1492,6 +1523,8 @@ function update(dt) {
         }
       }
     }
+
+    checkFlybys(dt);
 
     /* cañones: flak antifighter + andanadas capital contra capital */
     turretTick(capitals.ally, dt);
