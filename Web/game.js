@@ -71,8 +71,27 @@ function tintFaction(root, faction) {
     if (n.includes('Emissive_Cyan') || n.includes('EngineCore')) o.material = red;
     else if (n.includes('Hull_Mid') || n.includes('Hull_Light')) {
       o.material = o.material.clone();
-      o.material.color.multiplyScalar(0.55);
-      o.material.color.lerp(new THREE.Color(0x5a2020), 0.35);
+      // rojizo SIN oscurecer: sobre fondo negro, oscurecer = desaparecer
+      o.material.color.lerp(new THREE.Color(0x8a3a2c), 0.4);
+    }
+  });
+  return root;
+}
+
+/* luces de posición: los cascos llevan un rescoldo emisivo por bando para que
+   las naves se LEAN contra el vacío (el rig de luz "Espacio" no se toca).
+   OJO: intensidad < 0.5 — el horneado del enjambre clasifica como "glow" todo
+   material con emissiveIntensity > 0.5 y convertiría cascos enteros en neón. */
+function liftShipVisibility(root, faction) {
+  const glow = new THREE.Color(faction === 'ally' ? 0x16303c : 0x3c1a14);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const n = o.material.name || '';
+    if (n.includes('Hull')) {
+      o.material = o.material.clone();
+      o.material.emissive = glow.clone();
+      o.material.emissiveIntensity = 0.45;
+      if (o.material.metalness !== undefined) o.material.metalness = Math.min(o.material.metalness, 0.3);
     }
   });
   return root;
@@ -352,8 +371,9 @@ function flash(pos, warm = false, size = 6, time = 0.18) {
 
 /* ============================== escuadrones ============================== */
 // plantillas por facción: un solo build + tint, y clones baratos que comparten materiales
-const allyTemplate = buildPlayerFighter();
-const enemyTemplate = tintFaction(buildPlayerFighter(), 'enemy');
+const allyTemplate = liftShipVisibility(buildPlayerFighter(), 'ally');
+const enemyTemplate = liftShipVisibility(tintFaction(buildPlayerFighter(), 'enemy'), 'enemy');
+liftShipVisibility(ship, 'ally'); // tu nave también luce sus luces de posición
 
 const fighters = [];
 const ALLY_TOTAL = 7, ENEMY_TOTAL = 8;
@@ -413,8 +433,8 @@ function bakeSwarmGeometry(template) {
     const mat = o.material;
     const isGlow = (mat.emissiveIntensity || 0) > 0.5 && mat.emissive;
     const c = isGlow
-      ? mat.emissive.clone().multiplyScalar(Math.min(1.5, mat.emissiveIntensity * 0.5))
-      : (mat.color ? mat.color.clone() : new THREE.Color(0.8, 0.8, 0.8));
+      ? mat.emissive.clone().multiplyScalar(Math.min(2.4, mat.emissiveIntensity * 0.85))
+      : (mat.color ? mat.color.clone().multiplyScalar(1.15) : new THREE.Color(0.8, 0.8, 0.8));
     const n = geo.attributes.position.count;
     const colors = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b; }
@@ -429,7 +449,9 @@ function bakeSwarmGeometry(template) {
 function makeSwarmBatch(faction) {
   const baked = bakeSwarmGeometry(makeSwarmTemplate(faction));
   const hull = new THREE.InstancedMesh(baked.hull, new THREE.MeshStandardMaterial({
-    vertexColors: true, metalness: 0.45, roughness: 0.5, envMapIntensity: 0.6,
+    vertexColors: true, metalness: 0.25, roughness: 0.55, envMapIntensity: 1.0,
+    // rescoldo por bando: el enjambre se lee contra el vacío igual que los héroes
+    emissive: faction === 'ally' ? 0x16303c : 0x3c1a14, emissiveIntensity: 0.5,
   }), SWARM_PER_SIDE);
   hull.frustumCulled = false; // las instancias cubren toda la batalla: sin culling por lote
   scene.add(hull);
