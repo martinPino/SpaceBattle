@@ -34,13 +34,17 @@
   /* top-center: bajas */
   #kills{position:absolute;top:16px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.22em;color:#8fb2c6}
   #kills b{color:#7fe7ff}
+  /* top-center: vida de las capitales */
+  #caps{position:absolute;top:38px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:#5b7c92;white-space:nowrap}
+  #caps .bar{width:90px;margin:0}
+  #enemyCapBar i{background:#ff5a3c}
   /* overlays */
   .overlay{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(2,6,10,.82);backdrop-filter:blur(3px);pointer-events:all;text-align:center}
   .overlay h1{margin:0;font-size:26px;letter-spacing:.3em;font-weight:500;color:#7fe7ff}
   .overlay p{margin:0;font-size:12px;line-height:2;color:#8fa9bc;letter-spacing:.06em}
   .overlay .go{margin-top:10px;padding:10px 26px;border:1px solid #2b6f85;border-radius:4px;color:#aef;cursor:pointer;font-family:inherit;font-size:13px;letter-spacing:.2em;background:#0c1a24}
   .overlay .go:hover{background:#12242f}
-  #msg{position:absolute;top:56px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
+  #msg{position:absolute;top:78px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
   .hidden{display:none !important}
   /* ------- controles táctiles (solo en pantallas touch) ------- */
   html,body{touch-action:none;-webkit-user-select:none;user-select:none}
@@ -61,6 +65,8 @@
   @media (max-width:720px){
     #kills{font-size:10px;width:92vw;text-align:center}
     .bar{width:130px}
+    #caps{font-size:8px;gap:5px}
+    #caps .bar{width:56px}
     #vel b{font-size:22px}
   }
 </style>
@@ -73,7 +79,11 @@
     <div class="lbl">HULL</div><div class="bar" id="hullBar"><i></i></div>
   </div>
   <div id="vel"><b id="speed">0</b> m/s<br><span id="boost">◤ BOOST ◢</span></div>
-  <div id="kills">ENEMIES <b id="killCount">0</b>/<span id="killTotal">8</span> · ALLIES <b id="allyCount">6</b> · MISSILES <b id="missileCount">8</b></div>
+  <div id="kills">ENEMIES <b id="killCount">0</b>/<span id="killTotal">100</span> · ALLIES <b id="allyCount">100</b> · MISSILES <b id="missileCount">8</b></div>
+  <div id="caps">
+    <span>ALLIED CAPITAL</span><div class="bar" id="allyCapBar"><i></i></div>
+    <span>ENEMY CAPITAL</span><div class="bar" id="enemyCapBar"><i></i></div>
+  </div>
   <div id="msg"></div>
 </div>
 

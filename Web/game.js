@@ -101,7 +101,7 @@ world.add(enemyCapital);
 
 /* ----------------- campo de asteroides con colisión ----------------- */
 const colliders = [];
-function addCollider(obj, r) { colliders.push({ obj, r, pos: new THREE.Vector3() }); }
+function addCollider(obj, r, cap) { colliders.push({ obj, r, pos: new THREE.Vector3(), cap: cap || null }); }
 
 const field = buildAsteroidField({ count: 40, radius: 420, size_max: 14 });
 field.position.set(0, -30, 900);
@@ -117,16 +117,38 @@ med.position.set(140, -20, 500);
 world.add(med);
 addCollider(med, 26);
 
+// las capitales son entidades de combate: vida, torretas y estado de destrucción
+const capitals = {
+  ally: { group: alliedCapital, faction: 'ally', hp: 2600, maxHp: 2600, alive: true, dying: 0, burnT: 0, turrets: [], bar: null },
+  enemy: { group: enemyCapital, faction: 'enemy', hp: 2600, maxHp: 2600, alive: true, dying: 0, burnT: 0, turrets: [], bar: null },
+};
+
 // los cascos de las capitales bloquean: 5 esferas que siguen el afilado del casco
 // (las puntas estrechas — nada de parachoques fantasma delante de la proa)
-for (const cap of [alliedCapital, enemyCapital]) {
+for (const cap of [capitals.ally, capitals.enemy]) {
   for (const [off, r] of [[-1000, 150], [-500, 260], [0, 300], [500, 260], [1000, 150]]) {
     const proxy = new THREE.Object3D();
-    cap.add(proxy);
+    cap.group.add(proxy);
     proxy.position.set(0, 0, off);
-    addCollider(proxy, r);
+    addCollider(proxy, r, cap);
   }
 }
+
+// torretas: usa los TurretSocket_* del kit y completa con soportes sintéticos
+function initTurrets(cap) {
+  const marks = [];
+  cap.group.traverse((o) => { if (o.name && o.name.includes('TurretSocket')) marks.push(o); });
+  while (marks.length < 8) {
+    const i = marks.length;
+    const p = new THREE.Object3D();
+    cap.group.add(p);
+    p.position.set(i % 2 ? 110 : -110, 90, -1000 + i * 260);
+    marks.push(p);
+  }
+  cap.turrets = marks.slice(0, 12).map((mark) => ({ mark, flakCool: 1 + Math.random() * 2 }));
+}
+initTurrets(capitals.ally);
+initTurrets(capitals.enemy);
 // cache de posiciones de colliders (se refresca una vez por frame)
 function refreshColliders() {
   for (const c of colliders) c.obj.getWorldPosition(c.pos);
@@ -283,14 +305,14 @@ for (let i = 0; i < 340; i++) {
   scene.add(m);
   laserPool.push(m);
 }
-function fireLaser(origin, dir, speed, faction) {
+function fireLaser(origin, dir, speed, faction, isPlayer = false) {
   const m = laserPool.pop();
   if (!m) return;
   m.material = faction === 'ally' ? allyLaserMat : enemyLaserMat;
   m.position.copy(origin);
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
   m.visible = true;
-  lasers.push({ mesh: m, vel: dir.clone().multiplyScalar(speed), life: 2.2, faction });
+  lasers.push({ mesh: m, vel: dir.clone().multiplyScalar(speed), life: 2.2, faction, isPlayer });
 }
 
 /* ------------------------- destellos (POOL FIJO) -------------------------
@@ -356,7 +378,11 @@ for (let i = 0; i < ALLY_TOTAL; i++) spawnFighter('ally', i, ALLY_TOTAL);
 for (let i = 0; i < ENEMY_TOTAL; i++) spawnFighter('enemy', i, ENEMY_TOTAL);
 
 // el jugador cuenta como objetivo del bando aliado para la IA enemiga
-const playerEntity = { obj: ship, faction: 'ally', get alive() { return !player.dead; }, isPlayer: true };
+const playerEntity = {
+  obj: ship, faction: 'ally', isPlayer: true,
+  get alive() { return !player.dead; },
+  get vel() { return player.vel; }, // para el adelanto de tiro de las torretas
+};
 
 /* ---------------- ENJAMBRES: la guerra de fondo, a lo grande ----------------
    Docenas de cazas librando dogfights ambientales. Usan el MISMO caza del kit
@@ -426,7 +452,7 @@ function resetSwarmShip(s, immediate) {
     home.z + (s.faction === 'ally' ? 1 : -1) * (immediate ? 700 + Math.random() * 2200 : 300),
   );
   s.vel.set(0, 0, 0);
-  s.hp = 3;
+  s.hp = 6;
   s.alive = true;
   s.target = null;
   s.retarget = Math.random() * 2;
@@ -443,14 +469,14 @@ for (const faction of ['ally', 'enemy']) {
     swarm.push(s);
   }
 }
-const swarmRespawns = []; // { ship, at }
-
+// flotas FINITAS: 100 naves por bando y ni una más — cada baja acerca el final
 function killSwarmShip(s, byPlayer) {
   s.alive = false;
   flash(s.obj.position, true, 22, 0.55);
-  if (byPlayer) message('SWARM FIGHTER DOWN');
-  // refuerzos: el mismo hueco de instancia vuelve a despegar del hangar
-  swarmRespawns.push({ ship: s, at: clockTime + 6 + Math.random() * 6 });
+  if (s.faction === 'enemy') {
+    if (byPlayer) message('SWARM FIGHTER DOWN');
+    registerEnemyKill();
+  }
 }
 
 const instMatrix = new THREE.Matrix4();
@@ -488,12 +514,19 @@ function damageFighter(f, dmg, atPos) {
   flash(f.obj.position, true, 26, 0.6);
   scene.remove(f.obj);
   if (f.faction === 'enemy') {
-    kills++; hud.kills.textContent = kills;
     message('ENEMY INTERCEPTOR DOWN');
-    if (kills >= ENEMY_TOTAL) endGame(true);
+    registerEnemyKill();
   } else {
     message('ALLIED FIGHTER LOST');
   }
+}
+
+// la misión: aniquilar la flota enemiga COMPLETA (élite + enjambre = 100 naves)
+const TOTAL_ENEMY_SHIPS = ENEMY_TOTAL + SWARM_PER_SIDE;
+function registerEnemyKill() {
+  kills++;
+  hud.kills.textContent = kills;
+  if (kills >= TOTAL_ENEMY_SHIPS) endGame(true);
 }
 
 /* -------------------- misiles guiados (click derecho) -------------------- */
@@ -520,6 +553,14 @@ function launchMissile() {
     const dot = tmp.normalize().dot(fwd);
     if (dot > bestDot) { bestDot = dot; target = f; }
   }
+  // sin caza a tiro: fijación sobre la capital enemiga si la tienes de frente
+  if (!target && capitals.enemy.alive) {
+    tmp.copy(capitals.enemy.group.position).sub(ship.position);
+    if (tmp.length() < 3000 && tmp.normalize().dot(fwd) > Math.cos(THREE.MathUtils.degToRad(20))) {
+      const cap = capitals.enemy;
+      target = { obj: cap.group, isCapital: true, get alive() { return cap.alive; } };
+    }
+  }
 
   const m = new THREE.Mesh(missileGeo, missileMat);
   m.position.copy(ship.position).addScaledVector(fwd, 8).add(tmp.set(0, -1.2, 0).applyQuaternion(ship.quaternion));
@@ -540,23 +581,117 @@ function launchMissile() {
   message(target ? 'MISSILE: TARGET LOCKED' : 'MISSILE: NO LOCK');
 }
 
-/* -------------------- fuego de torretas entre capitales -------------------- */
+/* -------------------- cañones de las capitales -------------------- */
 const bolts = [];
-const boltGeo = new THREE.BoxGeometry(0.8, 0.8, 14);
+const boltGeo = new THREE.BoxGeometry(0.8, 0.8, 14);   // andanada pesada anticapital
+const flakGeo = new THREE.BoxGeometry(0.45, 0.45, 6);  // flak antifighter
 const boltAllyMat = new THREE.MeshBasicMaterial({ color: 0x9ff0ff });
 const boltEnemyMat = new THREE.MeshBasicMaterial({ color: 0xff8a5c });
+const zAxis = new THREE.Vector3(0, 0, 1);
+const tv1 = new THREE.Vector3(), tv2 = new THREE.Vector3(), tv3 = new THREE.Vector3();
 let nextBoltAlly = 1, nextBoltEnemy = 1.7;
-function capitalVolley(from, to, faction) {
-  const origin = from.position.clone().add(new THREE.Vector3(
-    (Math.random() - 0.5) * 500, 60 + Math.random() * 160, (Math.random() - 0.5) * 1400));
-  const target = to.position.clone().add(new THREE.Vector3(
-    (Math.random() - 0.5) * 400, (Math.random() - 0.5) * 200, (Math.random() - 0.5) * 900));
-  const dir = target.sub(origin).normalize();
-  const m = new THREE.Mesh(boltGeo, faction === 'ally' ? boltAllyMat : boltEnemyMat);
-  m.position.copy(origin);
-  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+
+// andanada pesada: sale de una torreta real, apunta a una esfera del casco rival
+function capitalVolley(fromCap, toCap) {
+  const capCols = colliders.filter((c) => c.cap === toCap);
+  if (!capCols.length) return;
+  const tr = fromCap.turrets[(Math.random() * fromCap.turrets.length) | 0];
+  tr.mark.getWorldPosition(tv1);
+  const aim = capCols[(Math.random() * capCols.length) | 0];
+  tv2.copy(aim.pos)
+    .add(tv3.set((Math.random() - 0.5) * 300, (Math.random() - 0.5) * 200, (Math.random() - 0.5) * 300))
+    .sub(tv1).normalize();
+  const m = new THREE.Mesh(boltGeo, fromCap.faction === 'ally' ? boltAllyMat : boltEnemyMat);
+  m.position.copy(tv1);
+  m.quaternion.setFromUnitVectors(zAxis, tv2);
   scene.add(m);
-  bolts.push({ mesh: m, vel: dir.multiplyScalar(140), life: 30, targetCap: to });
+  bolts.push({ mesh: m, vel: tv2.clone().multiplyScalar(240), life: 30, faction: fromCap.faction, kind: 'heavy', targetCap: toCap });
+}
+
+// flak: cada torreta busca el caza rival más cercano y tira con adelanto + dispersión
+function turretTick(cap, dt) {
+  if (!cap.alive) return;
+  for (const tr of cap.turrets) {
+    tr.flakCool -= dt;
+    if (tr.flakCool > 0) continue;
+    tr.mark.getWorldPosition(tv1);
+    let best = null, bestD = 1500 * 1500;
+    for (const f of fighters) {
+      if (!f.alive || f.faction === cap.faction) continue;
+      const d = tv1.distanceToSquared(f.obj.position);
+      if (d < bestD) { bestD = d; best = f; }
+    }
+    for (const s of swarm) {
+      if (!s.alive || s.faction === cap.faction) continue;
+      const d = tv1.distanceToSquared(s.obj.position);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    if (cap.faction === 'enemy' && !player.dead) {
+      const d = tv1.distanceToSquared(ship.position);
+      if (d < bestD) { bestD = d; best = playerEntity; }
+    }
+    if (!best) { tr.flakCool = 0.5; continue; }
+    const dist = Math.sqrt(bestD);
+    const speed = 260;
+    tv2.copy(best.obj.position).addScaledVector(best.vel, dist / speed).sub(tv1);
+    tv2.x += (Math.random() - 0.5) * dist * 0.06;
+    tv2.y += (Math.random() - 0.5) * dist * 0.06;
+    tv2.z += (Math.random() - 0.5) * dist * 0.06;
+    tv2.normalize();
+    const m = new THREE.Mesh(flakGeo, cap.faction === 'ally' ? boltAllyMat : boltEnemyMat);
+    m.position.copy(tv1);
+    m.quaternion.setFromUnitVectors(zAxis, tv2);
+    scene.add(m);
+    bolts.push({ mesh: m, vel: tv2.clone().multiplyScalar(speed), life: 7, faction: cap.faction, kind: 'flak' });
+    tr.flakCool = 3 + Math.random() * 2.5;
+  }
+}
+
+/* ---------------- vida y muerte de una capital ---------------- */
+const debris = [];
+function damageCapital(cap, dmg, pos) {
+  if (!cap.alive) return;
+  cap.hp -= dmg;
+  if (cap.bar) cap.bar.style.width = `${Math.max(0, (cap.hp / cap.maxHp) * 100)}%`;
+  if (pos) flash(pos, true, 8, 0.2);
+  if (cap.hp <= 0) {
+    cap.alive = false;      // deja de disparar y de ser objetivo desde YA
+    cap.dying = 4.2;        // …pero arde unos segundos antes de partirse
+    cap.burnT = 0;
+    message(cap.faction === 'enemy' ? 'ENEMY CAPITAL GOING DOWN' : 'ALLIED CAPITAL GOING DOWN');
+  }
+}
+
+// el final: las piezas reales del casco salen despedidas girando y se apagan
+function breakApartCapital(cap) {
+  cap.dying = 0;
+  cap.group.updateMatrixWorld(true);
+  const center = cap.group.getWorldPosition(new THREE.Vector3());
+  const meshes = [];
+  cap.group.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  const sized = meshes.map((m) => {
+    if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+    return { m, size: m.geometry.boundingSphere.radius * m.getWorldScale(tv1).length() };
+  }).sort((a, b) => b.size - a.size).slice(0, 70); // las 70 piezas mayores vuelan; el resto se vaporiza
+  for (const { m } of sized) {
+    m.material = Array.isArray(m.material) ? m.material.map((x) => x.clone()) : m.material.clone();
+    for (const mat of (Array.isArray(m.material) ? m.material : [m.material])) mat.transparent = true;
+    scene.attach(m);
+    tv1.copy(m.position).sub(center);
+    if (tv1.lengthSq() < 1) tv1.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+    tv1.normalize();
+    debris.push({
+      mesh: m,
+      vel: new THREE.Vector3((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10)
+        .addScaledVector(tv1, 7 + Math.random() * 15),
+      spin: new THREE.Vector3((Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7),
+      life: 0,
+    });
+  }
+  world.remove(cap.group);
+  for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].cap === cap) colliders.splice(i, 1);
+  flash(center, true, 340, 1.5);
+  message(cap.faction === 'enemy' ? 'ENEMY CAPITAL DESTROYED' : 'ALLIED CAPITAL LOST');
 }
 
 /* ============================== polvo ============================== */
@@ -581,9 +716,13 @@ const hud = {
   shield: el('shieldBar').firstElementChild, hull: el('hullBar').firstElementChild,
   msg: el('msg'), allies: el('allyCount'), missiles: el('missileCount'),
 };
-el('killTotal').textContent = ENEMY_TOTAL;
+el('killTotal').textContent = TOTAL_ENEMY_SHIPS;
+capitals.ally.bar = el('allyCapBar').firstElementChild;
+capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
+// gancho de depuración (consola): estado de la batalla y daño directo a capitales
+window.__sb = { capitals, damageCapital, fighters, swarm, get kills() { return kills; }, get t() { return clockTime; } };
 
 function damagePlayer(amount) {
   if (player.dead || !started) return;
@@ -598,7 +737,8 @@ function endGame(victory) {
   document.getElementById('start').classList.add('hidden');
   el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
-    ? `The enemy squadron has been wiped out.<br>The enemy capital withdraws… for now.`
+    ? `All ${TOTAL_ENEMY_SHIPS} enemy ships destroyed.<br>`
+      + (capitals.enemy.alive ? 'The enemy capital withdraws… for now.' : 'Their capital is drifting wreckage.')
     : 'Your hull gave out. Space is unforgiving.';
   el('end').classList.remove('hidden');
 }
@@ -620,11 +760,9 @@ let fireCooldown = 0, muzzleFlip = 0, shieldRegen = 0;
 let clockTime = 0;
 const clock = new THREE.Clock();
 
-function tick() {
-  requestAnimationFrame(tick);
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const t = clock.elapsedTime;
-  clockTime = t;
+function update(dt) {
+  clockTime += dt;
+  const t = clockTime;
   refreshColliders();
 
   /* ---- vuelo del jugador ---- */
@@ -672,7 +810,7 @@ function tick() {
       const m = muzzles[muzzleFlip++ % muzzles.length];
       m.getWorldPosition(tmp);
       fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
-      fireLaser(tmp, fwd.clone(), 350, 'ally');
+      fireLaser(tmp, fwd.clone(), 350, 'ally', true);
     }
 
     for (const c of colliders) {
@@ -737,12 +875,6 @@ function tick() {
     }
 
     /* ---- el ENJAMBRE: la guerra ambiental ---- */
-    for (let i = swarmRespawns.length - 1; i >= 0; i--) {
-      if (clockTime >= swarmRespawns[i].at) {
-        resetSwarmShip(swarmRespawns[i].ship, false);
-        swarmRespawns.splice(i, 1);
-      }
-    }
     for (const s of swarm) {
       if (!s.alive) continue;
       s.retarget -= dt;
@@ -752,6 +884,19 @@ function tick() {
           if (!o.alive || o.faction === s.faction) continue;
           const d = s.obj.position.distanceToSquared(o.obj.position);
           if (d < bestD) { bestD = d; best = o; }
+        }
+        // sin enjambre rival: caza élites contrarios y al jugador — con flotas
+        // finitas NADIE puede quedarse congelado sin objetivo (estancaría la misión)
+        if (!best) {
+          for (const o of fighters) {
+            if (!o.alive || o.faction === s.faction) continue;
+            const d = s.obj.position.distanceToSquared(o.obj.position);
+            if (d < bestD) { bestD = d; best = o; }
+          }
+          if (s.faction === 'enemy' && !player.dead) {
+            const d = s.obj.position.distanceToSquared(ship.position);
+            if (d < bestD) { bestD = d; best = playerEntity; }
+          }
         }
         s.target = best;
         s.retarget = 4 + Math.random() * 3;
@@ -772,13 +917,13 @@ function tick() {
 
       s.nextShot -= dt;
       if (s.nextShot <= 0 && dist < 260) {
-        s.nextShot = 2.2 + Math.random() * 2.6; // 184 tiradores: cadencia contenida
+        s.nextShot = 5 + Math.random() * 4; // 184 tiradores con impacto REAL: cadencia contenida
         const dir = tmp.copy(s.target.obj.position).sub(s.obj.position).normalize();
-        dir.x += (Math.random() - 0.5) * 0.06;
-        dir.y += (Math.random() - 0.5) * 0.06;
+        dir.x += (Math.random() - 0.5) * 0.14;
+        dir.y += (Math.random() - 0.5) * 0.14;
         fireLaser(tmp2.copy(s.obj.position).addScaledVector(dir, 8), dir.normalize().clone(), 220, s.faction);
-        // resolución teatral: de vez en cuando la ráfaga conecta de verdad
-        if (Math.random() < 0.16) {
+        // pincelada teatral residual: alguna ráfaga lejana conecta fuera de cámara
+        if (Math.random() < 0.02) {
           s.target.hp--;
           if (s.target.hp <= 0) killSwarmShip(s.target, false);
           else flash(s.target.obj.position, false, 5, 0.15);
@@ -786,21 +931,91 @@ function tick() {
       }
     }
 
-    /* fuego de torretas capital contra capital */
+    /* cañones: flak antifighter + andanadas capital contra capital */
+    turretTick(capitals.ally, dt);
+    turretTick(capitals.enemy, dt);
     nextBoltAlly -= dt; nextBoltEnemy -= dt;
-    if (nextBoltAlly <= 0) { nextBoltAlly = 1.2 + Math.random(); capitalVolley(alliedCapital, enemyCapital, 'ally'); }
-    if (nextBoltEnemy <= 0) { nextBoltEnemy = 1.4 + Math.random(); capitalVolley(enemyCapital, alliedCapital, 'enemy'); }
+    if (capitals.ally.alive && capitals.enemy.alive) {
+      // artillería aliada superior: el duelo de capitales suele ganarlo tu bando
+      if (nextBoltAlly <= 0) { nextBoltAlly = 1.1 + Math.random() * 0.6; capitalVolley(capitals.ally, capitals.enemy); }
+      if (nextBoltEnemy <= 0) { nextBoltEnemy = 1.5 + Math.random(); capitalVolley(capitals.enemy, capitals.ally); }
+    }
   }
 
-  /* ---- proyectiles de torreta ---- */
+  /* ---- capitales tocadas: incendio en cadena y despedazamiento ---- */
+  for (const cap of [capitals.ally, capitals.enemy]) {
+    if (cap.dying <= 0) continue;
+    cap.dying -= dt;
+    cap.burnT -= dt;
+    if (cap.burnT <= 0) {
+      cap.burnT = 0.12; // explosiones recorriendo el casco
+      tv1.set((Math.random() - 0.5) * 240, (Math.random() - 0.5) * 150, (Math.random() - 0.5) * 2100);
+      cap.group.localToWorld(tv1);
+      flash(tv1, true, 18 + Math.random() * 40, 0.4);
+    }
+    if (cap.dying <= 0) breakApartCapital(cap);
+  }
+
+  /* ---- escombros de capital: derivan, giran y se apagan ---- */
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const d = debris[i];
+    d.life += dt;
+    d.mesh.position.addScaledVector(d.vel, dt);
+    d.mesh.rotation.x += d.spin.x * dt;
+    d.mesh.rotation.y += d.spin.y * dt;
+    d.mesh.rotation.z += d.spin.z * dt;
+    if (d.life > 9) {
+      const k = Math.max(0, 1 - (d.life - 9) / 5);
+      for (const mat of (Array.isArray(d.mesh.material) ? d.mesh.material : [d.mesh.material])) mat.opacity = k;
+      if (k <= 0) { scene.remove(d.mesh); debris.splice(i, 1); }
+    }
+  }
+
+  /* ---- proyectiles de torreta (segmento: sin túneles) ---- */
   for (let i = bolts.length - 1; i >= 0; i--) {
     const b = bolts[i];
-    b.mesh.position.addScaledVector(b.vel, dt);
+    segPrev.copy(b.mesh.position);
+    segStep.copy(b.vel).multiplyScalar(dt);
+    b.mesh.position.add(segStep);
     b.life -= dt;
     let done = b.life <= 0;
-    if (!done && b.mesh.position.distanceToSquared(b.targetCap.position) < 700 * 700) {
-      flash(b.mesh.position, true, 30, 0.5);
-      done = true;
+
+    if (!done && b.kind === 'heavy' && b.targetCap.alive) {
+      for (const c of colliders) {
+        if (c.cap !== b.targetCap) continue;
+        if (segmentHitsSphere(segPrev, segStep, c.pos, c.r)) {
+          damageCapital(b.targetCap, 16, b.mesh.position);
+          flash(b.mesh.position, true, 30, 0.5);
+          done = true; break;
+        }
+      }
+    }
+    if (!done && b.kind === 'flak') {
+      for (const f of fighters) {
+        if (!f.alive || f.faction === b.faction) continue;
+        if (segmentHitsSphere(segPrev, segStep, f.obj.position, 9)) {
+          damageFighter(f, 1, b.mesh.position);
+          done = true; break;
+        }
+      }
+      if (!done) {
+        for (const s of swarm) {
+          if (!s.alive || s.faction === b.faction) continue;
+          if (segmentHitsSphere(segPrev, segStep, s.obj.position, 9)) {
+            s.hp--;
+            if (s.hp <= 0) killSwarmShip(s, false);
+            else flash(b.mesh.position, false, 5, 0.15);
+            done = true; break;
+          }
+        }
+      }
+      if (!done && b.faction === 'enemy' && !player.dead
+          && segmentHitsSphere(segPrev, segStep, ship.position, 8)) {
+        damagePlayer(9);
+        shieldRegen = 0;
+        flash(b.mesh.position, true, 6, 0.2);
+        done = true;
+      }
     }
     if (done) { scene.remove(b.mesh); bolts.splice(i, 1); }
   }
@@ -821,7 +1036,8 @@ function tick() {
     ms.life -= dt;
     let done = ms.life <= 0;
 
-    if (!done && hasTarget && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 12 * 12) {
+    if (!done && hasTarget && !ms.target.isCapital
+        && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 12 * 12) {
       damageFighter(ms.target, 3, ms.mesh.position); // un misil, una baja
       flash(ms.mesh.position, true, 14, 0.35);
       done = true;
@@ -829,6 +1045,8 @@ function tick() {
     if (!done) {
       for (const c of colliders) {
         if (ms.mesh.position.distanceToSquared(c.pos) < c.r * c.r) {
+          // cabezazo contra una capital enemiga: daño pesado de misil
+          if (c.cap && c.cap.alive && c.cap.faction === 'enemy') damageCapital(c.cap, 150, ms.mesh.position);
           flash(ms.mesh.position, true, 12, 0.3);
           done = true; break;
         }
@@ -855,13 +1073,17 @@ function tick() {
         }
       }
     }
-    // los láseres del jugador también cazan al enjambre enemigo (no cuenta para la misión)
-    if (!dead && l.faction === 'ally') {
+    // los láseres cazan al enjambre RIVAL — simétrico para ambos bandos
+    // (antes solo los aliados impactaban de verdad: con flotas finitas era una escabechina)
+    if (!dead) {
+      // el jugador es cirujano (r8); los NPC son peores tiradores (r5):
+      // la flota se desgasta sola DESPACIO y tú eres quien decide la batalla
+      const hitR = l.isPlayer ? 8 : 5;
       for (const s of swarm) {
-        if (!s.alive || s.faction === 'ally') continue;
-        if (segmentHitsSphere(segPrev, segStep, s.obj.position, 8)) {
+        if (!s.alive || s.faction === l.faction) continue;
+        if (segmentHitsSphere(segPrev, segStep, s.obj.position, hitR)) {
           s.hp--;
-          if (s.hp <= 0) killSwarmShip(s, true);
+          if (s.hp <= 0) killSwarmShip(s, l.isPlayer);
           else flash(l.mesh.position, false, 5, 0.15);
           dead = true; break;
         }
@@ -878,6 +1100,8 @@ function tick() {
     if (!dead) {
       for (const c of colliders) {
         if (segmentHitsSphere(segPrev, segStep, c.pos, c.r)) {
+          // los cascos de capital acusan el fuego láser rival (daño de picadura)
+          if (c.cap && c.cap.alive && c.cap.faction !== l.faction) damageCapital(c.cap, 1, l.mesh.position);
           flash(l.mesh.position, false, 4, 0.15);
           dead = true; break;
         }
@@ -951,6 +1175,12 @@ function tick() {
   gas.rotation.y += dt * 0.002;
 
   updateSwarmInstances();
+}
+function tick() {
+  requestAnimationFrame(tick);
+  update(Math.min(clock.getDelta(), 0.05));
   renderer.render(scene, camera);
 }
+// simulación acelerada para pruebas: N segundos de batalla sin esperar al render
+window.__sb.step = (seconds) => { for (let i = 0, n = Math.round(seconds * 60); i < n; i++) update(1 / 60); };
 tick();
