@@ -2147,6 +2147,8 @@ function wireLobby() {
     pv.scene.add(k, b, r2);
   }
   el('shipDots').innerHTML = SHIPS.map(() => '<i></i>').join('');
+  const kitPreview = allyTemplate.clone(); // copia intacta del caza del kit para el visor
+  window.__sbPreview = pv;                 // gancho de diagnóstico
 
   function showShip(i, updateGame = true) {
     pv.idx = (i + SHIPS.length) % SHIPS.length;
@@ -2155,13 +2157,20 @@ function wireLobby() {
     el('shipInfo').textContent = spec.file && !shipCache.has(spec.id) ? 'loading hull…' : spec.tag;
     [...el('shipDots').children].forEach((d, k) => d.classList.toggle('on', k === pv.idx));
     const place = (src) => {
+      if (pv.idx !== SHIPS.indexOf(spec)) return;      // llegó tarde: ya pasó a otra
       if (pv.model) pv.pivot.remove(pv.model);
       pv.model = src.clone();
       pv.model.position.set(0, 0, 0);
+      pv.model.rotation.y = THREE.MathUtils.degToRad(spec.yaw || 0);
+      // el clon hereda la visibilidad del original: forzarla por si venía oculto
+      pv.model.traverse((o) => { o.visible = true; });
       pv.pivot.add(pv.model);
       el('shipInfo').textContent = spec.tag;
     };
-    if (!spec.file) place(ship);                       // el caza del kit, tal cual
+    // OJO: para el kit hay que clonar una copia LIMPIA, no la nave del jugador
+    // (`ship`), que en ese momento ya lleva puesto el casco elegido antes: por
+    // eso al volver atrás se seguía viendo la nave anterior
+    if (!spec.file) place(kitPreview);
     else if (shipCache.has(spec.id)) place(shipCache.get(spec.id));
     else new GLTFLoader().load(spec.file, (g) => { shipCache.set(spec.id, g.scene); place(g.scene); },
       undefined, () => { el('shipInfo').textContent = 'could not load this hull'; });
