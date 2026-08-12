@@ -41,14 +41,31 @@ let peer = null;
 // El 443 de openrelay ya no responde (comprobado); solo queda vivo el 80, en
 // UDP y en TCP. Si algún día quieres conexiones fiables tras NAT estricta,
 // pon aquí un TURN propio: es la única pieza que el P2P no puede evitar.
-const ICE = {
-  iceServers: [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  ],
-  iceCandidatePoolSize: 4,
-};
+const STUN = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
+];
+const FREE_TURN = [
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
+
+/* TURN propio, si lo hay. Se guarda en el navegador: en cuanto pegues unas
+   credenciales, el multijugador funciona en cualquier red sin tocar código.
+   Formato: "turn:host:puerto|usuario|clave" (varias líneas si quieres). */
+export function getTurn() {
+  try {
+    return (localStorage.getItem('sb_turn') || '').split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((l) => { const [urls, username, credential] = l.split('|').map((s) => s.trim()); return { urls, username, credential }; })
+      .filter((s) => s.urls && s.urls.startsWith('turn'));
+  } catch { return []; }
+}
+export function setTurn(text) {
+  try { localStorage.setItem('sb_turn', text || ''); } catch { /* modo privado */ }
+}
+export function iceConfig() {
+  const own = getTurn();
+  return { iceServers: [...STUN, ...own, ...(own.length ? [] : FREE_TURN)], iceCandidatePoolSize: 4 };
+}
 
 export const diag = { log: [], onLog: () => {} };
 function note(msg) {
@@ -62,7 +79,7 @@ function newPeer() {
     // servidor público de señalización de PeerJS: solo intercambia la
     // "presentación" entre navegadores; el juego viaja directo entre ellos
     note('abriendo canal de señalización…');
-    const p = new Peer({ debug: 1, config: ICE });
+    const p = new Peer({ debug: 1, config: iceConfig() });
     const to = setTimeout(() => { note('señalización: sin respuesta en 15 s'); reject(new Error('signal-timeout')); }, 15000);
     p.on('open', (id) => { clearTimeout(to); note('señalización lista'); resolve([p, id]); });
     p.on('disconnected', () => { note('señalización caída; reconectando…'); try { p.reconnect(); } catch { /* ya destruido */ } });

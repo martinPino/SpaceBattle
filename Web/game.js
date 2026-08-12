@@ -11,7 +11,7 @@ import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-text
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
-  writePos, readPos, writeQuat, readQuat } from './net.js';
+  iceConfig, getTurn, setTurn, writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1822,38 +1822,46 @@ function wireLobby() {
   el('diagBtn').onclick = async () => {
     diag.log.length = 0;
     const say = (m) => { diag.log.push(m); diag.onLog(); };
-    say('— prueba de conexión —');
+    say('— connection test —');
+    const kinds = new Set();
+    let mdns = false;
     try {
-      const a = new RTCPeerConnection(), b = new RTCPeerConnection();
-      a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
-      b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
-      const dc = a.createDataChannel('t');
-      const ok = new Promise((res) => { dc.onopen = () => res(true); setTimeout(() => res(false), 6000); });
-      await a.setLocalDescription(await a.createOffer());
-      await b.setRemoteDescription(a.localDescription);
-      await b.setLocalDescription(await b.createAnswer());
-      await a.setRemoteDescription(b.localDescription);
-      say(await ok ? '1) WebRTC funciona en este navegador ✓'
-        : '1) WebRTC BLOQUEADO en este navegador/red ✗ (extensión, VPN o política del equipo)');
-      a.close(); b.close();
-    } catch (e) { say('1) WebRTC no disponible: ' + e); }
-    // 2) candidatos: 'srflx' = STUN alcanzable, 'relay' = TURN alcanzable
-    try {
-      const pc = new RTCPeerConnection({ iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-      ] });
-      const kinds = new Set();
-      pc.onicecandidate = (e) => { if (e.candidate) kinds.add(e.candidate.type); };
+      const cfg = iceConfig();
+      const pc = new RTCPeerConnection(cfg);
+      pc.onicecandidate = (e) => {
+        if (!e.candidate) return;
+        kinds.add(e.candidate.type);
+        // Chrome oculta tu IP local tras un nombre .local: si el otro extremo
+        // no puede resolverlo, la vía directa muere y solo queda el relé
+        if (e.candidate.type === 'host' && /[0-9a-f-]{30,}\.local/i.test(e.candidate.candidate)) mdns = true;
+      };
       pc.createDataChannel('x');
       await pc.setLocalDescription(await pc.createOffer());
-      await new Promise((res) => setTimeout(res, 6000));
+      await new Promise((res) => setTimeout(res, 7000));
       pc.close();
-      say(`2) candidatos obtenidos: ${[...kinds].join(', ') || 'ninguno'}`);
-      say(kinds.has('relay') ? '   TURN alcanzable ✓ (debería conectar aunque haya NAT estricta)'
-        : kinds.has('srflx') ? '   STUN sí, TURN no ✗ — con NAT estricta fallará'
-          : '   sin salida a STUN/TURN ✗ — red muy restringida');
-    } catch (e) { say('2) fallo al sondear: ' + e); }
+      say(`WebRTC: ${kinds.size ? 'funciona ✓' : 'sin candidatos ✗ (bloqueado por extensión, VPN o política)'}`);
+      say(`candidatos: ${[...kinds].join(', ') || 'ninguno'}`);
+      say(`  host  ${kinds.has('host') ? '✓' : '✗'}  red local${mdns ? ' (oculta tras mDNS)' : ''}`);
+      say(`  srflx ${kinds.has('srflx') ? '✓' : '✗'}  STUN alcanzable`);
+      say(`  relay ${kinds.has('relay') ? '✓' : '✗'}  relé TURN alcanzable`);
+      say('');
+      if (kinds.has('relay')) say('VEREDICTO: debería conectar en cualquier red ✓');
+      else if (kinds.has('srflx')) {
+        say('VEREDICTO: sin relé TURN. Conectará entre redes domésticas');
+        say('permisivas, pero fallará tras NAT estricta o cortafuegos de');
+        say('empresa. Pega un TURN abajo para que funcione siempre.');
+      } else say('VEREDICTO: tu red no deja salir WebRTC ✗');
+    } catch (e) { say('fallo al sondear: ' + e); }
+  };
+
+  // TURN propio: al pegarlo queda guardado en este navegador
+  const turnBox = el('turnBox');
+  turnBox.value = (getTurn().map((s) => `${s.urls}|${s.username}|${s.credential}`).join('\n'));
+  el('saveTurnBtn').onclick = () => {
+    setTurn(turnBox.value);
+    el('lobbyStatus').textContent = turnBox.value.trim()
+      ? 'TURN saved in this browser — host or join again'
+      : 'TURN cleared';
   };
   net.onStart = () => beginMultiplayer();
   net.onLeave = (id) => { removeRemotePilot(id); drawScore(); };
