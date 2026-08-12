@@ -12,7 +12,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
-  setName, setTeam, setMode, iceConfig, getTurn, setTurn, refreshTurn,
+  setName, setTeam, setMode, setShip, iceConfig, getTurn, setTurn, refreshTurn,
   writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
@@ -22,6 +22,43 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.3;
 document.body.appendChild(renderer.domElement);
+
+/* ===================== PANTALLA DE CARGA =====================
+   Hasta ahora el menú aparecía al instante y el botón de empezar podía
+   pulsarse con la mitad de los modelos aún viajando por la red: la partida
+   arrancaba con un tirón. Cada cargador se apunta aquí y el menú no sale
+   hasta que todos terminan (o fallan, que también cuenta). */
+const loading = { total: 0, done: 0, label: 'building the fleet…', ready: false };
+function loadJob(label) {
+  loading.total++;
+  loading.label = label;
+  paintLoading();
+  let closed = false;
+  return () => { // vale tanto para éxito como para error: el menú nunca se queda colgado
+    if (closed) return;
+    closed = true;
+    loading.done++;
+    paintLoading();
+  };
+}
+function paintLoading() {
+  const bar = document.getElementById('loadBar');
+  const what = document.getElementById('loadWhat');
+  if (!bar) return;
+  const pct = loading.total ? Math.round((loading.done / loading.total) * 100) : 0;
+  bar.style.width = `${pct}%`;
+  what.textContent = loading.done >= loading.total ? 'ready' : loading.label;
+  if (loading.total && loading.done >= loading.total && !loading.ready) {
+    loading.ready = true;
+    // margen para que three.js suba las mallas a la GPU. Con temporizador y NO
+    // con requestAnimationFrame: el navegador lo congela en pestañas de fondo,
+    // y quien cargara el juego en segundo plano se quedaba en esta pantalla.
+    setTimeout(() => {
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('start').classList.remove('hidden');
+    }, 120);
+  }
+}
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.5, 30000);
@@ -73,7 +110,9 @@ world.add(nebula);
 const starGlowTex = radialGlow([0.85, 0.92, 1.0], 0.22);        // estrella: núcleo pequeño
 const gasGlowTex = radialGlow([0.55, 0.78, 1.0], 0.3, true);    // gas: sin núcleo caliente
 function loadPointCloud(url, { position, rotation, scale = 1, size, color, tint, opacity = 1, gas = false }) {
+  const done = loadJob('deep sky…');
   new OBJLoader().load(url, (root) => {
+    done();
     root.traverse((o) => {
       if (!o.isPoints) return;
       const hasColor = !!o.geometry.getAttribute('color');
@@ -91,7 +130,7 @@ function loadPointCloud(url, { position, rotation, scale = 1, size, color, tint,
     root.scale.setScalar(scale);
     root.frustumCulled = false; // una nube tan grande no debe desaparecer por su centro
     world.add(root);
-  });
+  }, undefined, done);
 }
 // galaxia espiral: lejana e inclinada para verle los brazos. Compacta a propósito
 // — escalarla invadiría el campo de batalla y sus estrellas pasarían al lado del
@@ -274,6 +313,7 @@ function installOrbHull(cap) {
   cap.burnExtent = [2400, 700, 1800]; // arco ancho: el incendio recorre las alas
   return true;
 }
+const capitalDone = loadJob('imperial flagship…');
 new OBJLoader().load('./assets/SHIP_Capital_Imperial_Orb_01.obj', (obj) => {
   obj.traverse((o) => {
     if (!o.isMesh) return;
@@ -282,7 +322,8 @@ new OBJLoader().load('./assets/SHIP_Capital_Imperial_Orb_01.obj', (obj) => {
   });
   orbTemplate = obj;
   installOrbHull(capitals.enemy);
-});
+  capitalDone();
+}, undefined, capitalDone);
 // cache de posiciones de colliders (se refresca una vez por frame)
 function refreshColliders() {
   for (const c of colliders) c.obj.getWorldPosition(c.pos);
@@ -1070,10 +1111,12 @@ function replaceSwarmBatch(faction, source) {
     }
   }
 }
+const swarmDone = loadJob('swarm fighters…');
 new GLTFLoader().load('./assets/ships/swarm-starflyer.glb', (g) => {
   replaceSwarmBatch('ally', g.scene);
   replaceSwarmBatch('enemy', g.scene);
-}, undefined, () => { /* si falla, se queda el caza del kit */ });
+  swarmDone();
+}, undefined, swarmDone); // si falla, se queda el caza del kit
 
 /* ===================== CAÑONERAS ENEMIGAS (SHIP_Enemy_Gunship_01) =====================
    Naves pesadas de 24,5 m — el doble que un caza — con 4 cañones láser y pods de
@@ -1114,9 +1157,11 @@ function gunshipFallbackTemplate() {
   t.scale.setScalar(2.0);
   return t;
 }
+const gunshipDone = loadJob('enemy gunships…');
 new OBJLoader().load(
   './assets/SHIP_Enemy_Gunship_01.obj',
   (obj) => {
+    gunshipDone();
     const drop = [];
     obj.traverse((o) => {
       if (!o.isMesh) return;
@@ -1129,7 +1174,7 @@ new OBJLoader().load(
     swarmBatches.gunship = makeGunshipBatch(obj);
   },
   undefined,
-  () => { swarmBatches.gunship = makeGunshipBatch(gunshipFallbackTemplate()); },
+  () => { gunshipDone(); swarmBatches.gunship = makeGunshipBatch(gunshipFallbackTemplate()); },
 );
 
 const swarm = [];
@@ -1623,6 +1668,28 @@ function tintPilot(rp) {
     if (n.includes('Emissive') || n.includes('EngineCore')) o.material.emissive.copy(c);
   });
 }
+/* cada piloto remoto vuela el casco que eligió: se descarga una sola vez y
+   se comparte entre todos los que lleven el mismo */
+function dressRemotePilot(rp) {
+  const spec = SHIPS.find((s) => s.id === (net.players.get(rp.id)?.ship || 'kit')) || SHIPS[0];
+  if (rp.shipId === spec.id) return;
+  rp.shipId = spec.id;
+  const swap = (src) => {
+    if (rp.shipId !== spec.id) return;           // llegó tarde: ya eligió otra
+    if (rp.body) rp.obj.remove(rp.body);
+    for (const m of rp.kitMeshes) m.visible = !src;
+    if (src) {
+      rp.body = src.clone();
+      rp.body.rotation.y = THREE.MathUtils.degToRad(spec.yaw || 0);
+      rp.obj.add(rp.body);
+    } else rp.body = null;
+    tintPilot(rp);
+  };
+  if (!spec.file) { swap(null); return; }
+  if (shipCache.has(spec.id)) { swap(shipCache.get(spec.id)); return; }
+  new GLTFLoader().load(spec.file, (g) => { shipCache.set(spec.id, g.scene); swap(g.scene); },
+    undefined, () => swap(null));
+}
 function makeRemotePilot(id, name, idx) {
   const obj = allyTemplate.clone();
   obj.traverse((o) => {
@@ -1638,8 +1705,12 @@ function makeRemotePilot(id, name, idx) {
     prevQ: obj.quaternion.clone(), nextQ: obj.quaternion.clone(),
     lerpT: 1, faction: 'ally', isPilot: true,
   };
+  rp.kitMeshes = [];
+  obj.traverse((o) => { if (o.isMesh) rp.kitMeshes.push(o); });
+  rp.body = null;
   remotePilots.push(rp);
   tintPilot(rp);
+  dressRemotePilot(rp);
   return rp;
 }
 // bandos: mismo color, sin fuego amigo
@@ -1702,7 +1773,7 @@ function decodeFleet(buf) {
     if (!s.alive) { s.obj.position.copy(tv2); s.alive = true; }
     tv3.copy(tv2).sub(s.obj.position);
     if (tv3.lengthSq() > 0.02) {
-      lookM.lookAt(zeroV, tv3.negate(), s.obj.up);
+      lookM.lookAt(tv3, zeroV, s.obj.up); // el invitado orienta según el desplazamiento
       s.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), 0.5);
     }
     s.obj.position.copy(tv2);
@@ -1939,7 +2010,7 @@ function wireLobby() {
   net.onLobby = () => {
     for (const rp of remotePilots) {
       const info = net.players.get(rp.id);
-      if (info) { rp.name = info.name; tintPilot(rp); }
+      if (info) { rp.name = info.name; tintPilot(rp); dressRemotePilot(rp); }
     }
     lobbyRefresh();
   };
@@ -2076,7 +2147,9 @@ function wireLobby() {
     else if (shipCache.has(spec.id)) place(shipCache.get(spec.id));
     else new GLTFLoader().load(spec.file, (g) => { shipCache.set(spec.id, g.scene); place(g.scene); },
       undefined, () => { el('shipInfo').textContent = 'could not load this hull'; });
-    if (updateGame) applyShip(spec.id);
+    // setShip recuerda la elección aunque aún no haya sala: si se guardara solo
+    // estando conectado, elegir nave antes de crear la partida no llegaría a nadie
+    if (updateGame) { applyShip(spec.id); setShip(spec.id); }
   }
   el('shipPrev').onclick = () => showShip(pv.idx - 1);
   el('shipNext').onclick = () => showShip(pv.idx + 1);
@@ -2549,7 +2622,11 @@ function update(dt) {
       f.vel.multiplyScalar(Math.exp(-0.5 * dt));
       if (f.vel.length() > 46) f.vel.setLength(46);
       f.obj.position.addScaledVector(f.vel, dt);
-      lookM.lookAt(f.obj.position, f.target.obj.position, f.obj.up);
+      // OJO con el orden: Matrix4.lookAt(ojo, objetivo) construye una base de
+      // CÁMARA, con +Z alejándose del objetivo. Pasando (objetivo, posición) el
+      // +Z apunta AL objetivo, que es donde tienen el morro las naves. Con el
+      // caza del kit, casi simétrico, no se notaba que volaban de espaldas.
+      lookM.lookAt(f.target.obj.position, f.obj.position, f.obj.up);
       lookQ.setFromRotationMatrix(lookM);
       // escora en el viraje: rueda sobre su eje según el empuje lateral
       bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < 110 ? f.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
@@ -2611,7 +2688,7 @@ function update(dt) {
       const topSpeed = s.isGunship ? 25 : 42;
       if (s.vel.length() > topSpeed) s.vel.setLength(topSpeed);
       s.obj.position.addScaledVector(s.vel, dt);
-      lookM.lookAt(s.obj.position, s.target.obj.position, s.obj.up);
+      lookM.lookAt(s.target.obj.position, s.obj.position, s.obj.up); // +Z al objetivo (ver nota arriba)
       lookQ.setFromRotationMatrix(lookM);
       bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < orbitAt ? s.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
       lookQ.multiply(bankQ);

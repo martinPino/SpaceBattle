@@ -45,6 +45,11 @@
   .overlay .go{margin-top:10px;padding:10px 26px;border:1px solid #2b6f85;border-radius:4px;color:#aef;cursor:pointer;font-family:inherit;font-size:13px;letter-spacing:.2em;background:#0c1a24}
   .overlay .go:hover{background:#12242f}
   .overlay .go.alt{border-color:#25505f;color:#7fa8bb;font-size:11px;padding:8px 18px}
+  /* pantalla de carga */
+  #loading{z-index:30;background:#03070b}
+  #loadBarOuter{width:300px;max-width:70vw;height:3px;background:#12242f;border-radius:2px;overflow:hidden}
+  #loadBar{display:block;height:100%;width:0;background:#7fe7ff;transition:width .25s ease-out}
+  #loadWhat{font-size:10px;letter-spacing:.2em;color:#5b7c92}
   /* selector de nave */
   #shipPick{display:flex;flex-direction:column;align-items:center;gap:4px;margin:2px 0}
   .lbl2{font-size:10px;letter-spacing:.28em;color:#5b7c92}
@@ -183,7 +188,13 @@
   <button id="missileBtn">MISSILE</button>
 </div>
 
-<div class="overlay" id="start">
+<div class="overlay" id="loading">
+  <h1>SPACE BATTLE</h1>
+  <div id="loadBarOuter"><i id="loadBar"></i></div>
+  <p id="loadWhat">building the fleet…</p>
+</div>
+
+<div class="overlay hidden" id="start">
   <h1>SPACE BATTLE</h1>
   <p>Mouse — steer the ship · <b>W/S</b> throttle/brake · <b>A/D</b> strafe · <b>R/F</b> vertical<br>
   <b>Q/E</b> roll · <b>Shift</b> boost · <b>Space / left click</b> — lasers · <b>right click</b> — guided missile<br><br>

@@ -23,6 +23,7 @@ export const net = {
   name: 'PILOT',
   mode: 'ffa',         // 'ffa' | 'teams'
   team: 'blue',        // bando propio cuando mode === 'teams'
+  ship: 'kit',         // casco elegido, para que los demás te vean como eres
   started: false,
   onLobby: () => {},
   onStart: () => {},
@@ -152,7 +153,7 @@ export async function hostGame(name) {
   net.role = 'host';
   net.self = id;
   net.id = id;
-  net.players.set(id, { id, name: cleanName(name), ready: true, kills: 0, deaths: 0, team: net.team });
+  net.players.set(id, { id, name: cleanName(name), ready: true, kills: 0, deaths: 0, team: net.team, ship: net.ship });
   p.on('connection', (conn) => {
     note('entrante: negociando…');
     watchIce(conn);
@@ -183,7 +184,7 @@ function hostHandle(conn, d) {
     case 'hello':
       net.players.set(conn.peer, {
         id: conn.peer, name: cleanName(d.name), ready: false, kills: 0, deaths: 0,
-        team: d.team === 'red' ? 'red' : 'blue',
+        team: d.team === 'red' ? 'red' : 'blue', ship: String(d.ship || 'kit').slice(0, 16),
       });
       broadcastLobby();
       break;
@@ -202,6 +203,11 @@ function hostHandle(conn, d) {
       if (pl) { pl.team = d.team === 'red' ? 'red' : 'blue'; broadcastLobby(); }
       break;
     }
+    case 'ship': {
+      const pl = net.players.get(conn.peer);
+      if (pl) { pl.ship = String(d.ship || 'kit').slice(0, 16); broadcastLobby(); }
+      break;
+    }
     default:
       net.onMessage(conn.peer, d);
   }
@@ -212,7 +218,8 @@ function cleanName(n) { return String(n || 'PILOT').toUpperCase().slice(0, 12) |
 export function broadcastLobby() {
   if (net.role !== 'host') return;
   const list = [...net.players.values()].map((p) => ({
-    id: p.id, name: p.name, ready: p.ready, kills: p.kills, deaths: p.deaths, team: p.team || 'blue',
+    id: p.id, name: p.name, ready: p.ready, kills: p.kills, deaths: p.deaths,
+    team: p.team || 'blue', ship: p.ship || 'kit',
   }));
   send({ t: 'lobby', players: list, hostId: net.self, mode: net.mode });
   net.onLobby();
@@ -232,6 +239,13 @@ export function setTeam(team) {
     const me = net.players.get(net.self);
     if (me) { me.team = net.team; broadcastLobby(); }
   } else if (net.role === 'guest') net.hostConn?.send({ t: 'team', team: net.team });
+}
+export function setShip(id) {
+  net.ship = String(id || 'kit');
+  if (net.role === 'host') {
+    const me = net.players.get(net.self);
+    if (me) { me.ship = net.ship; broadcastLobby(); }
+  } else if (net.role === 'guest') net.hostConn?.send({ t: 'ship', ship: net.ship });
 }
 export function setMode(mode) { // solo el anfitrión decide el tipo de partida
   if (net.role !== 'host') return;
@@ -287,7 +301,7 @@ export async function joinGame(hostId, name) {
     } else net.onMessage(hostId, d);
   });
   conn.on('close', () => net.onError('Se perdió la conexión con el anfitrión'));
-  conn.send({ t: 'hello', name: cleanName(name), team: net.team });
+  conn.send({ t: 'hello', name: cleanName(name), team: net.team, ship: net.ship });
   return id;
 }
 
