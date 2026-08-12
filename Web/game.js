@@ -191,11 +191,19 @@ const capitals = {
 // los cascos de las capitales bloquean: esferas que siguen la forma del casco
 // (las puntas estrechas — nada de parachoques fantasma delante de la proa)
 const HULL_SPHERES_KIT = [[0, 0, -1000, 150], [0, 0, -500, 260], [0, 0, 0, 300], [0, 0, 500, 260], [0, 0, 1000, 150]];
-// arco imperial: 12 esferas derivadas de su geometría real (93% de cobertura)
+/* Arco imperial: el casco son DOS cosas distintas — un núcleo esférico (con
+   torre de mando arriba y hangar ventral abajo) y un aro plano de solo 400 m
+   de grosor. Agruparlo todo por ángulo daba esferas de radio ~590 que envolvían
+   cientos de metros de vacío sobre y bajo el aro: pared invisible en cielo
+   despejado. Ahora el núcleo va en una pila vertical y el aro en esferas
+   pequeñas encadenadas (radio medio 210): 91% de cobertura y 0% de volumen
+   bloqueado a más de 300 m de geometría. */
 const HULL_SPHERES_ORB = [
-  [-680, 13, -29, 590], [-242, 2, -131, 413], [-110, 50, -390, 588], [133, 39, -426, 589],
-  [244, 2, -132, 412], [676, 12, -28, 593], [649, 12, 285, 606], [375, 4, 497, 612],
-  [132, 30, 630, 594], [-106, -11, 566, 655], [-374, 11, 497, 613], [-640, 12, 284, 594],
+  [2, -269, 44, 359], [4, -26, 91, 457], [-6, 201, 63, 396], [-1, 452, -54, 323],
+  [-1131, 44, 74, 131], [-1141, -3, -344, 131], [-251, -19, -641, 139], [0, -7, -662, 144],
+  [252, -19, -641, 139], [1141, -3, -344, 131], [1130, 40, 74, 128], [1091, 19, 391, 221],
+  [916, 21, 696, 219], [633, 29, 943, 173], [302, 21, 1094, 165], [0, 15, 1145, 167],
+  [-302, 28, 1093, 166], [-636, 30, 944, 173], [-903, 12, 699, 208], [-1087, 23, 397, 228],
 ];
 function buildCapitalColliders(cap, spheres) {
   for (let i = colliders.length - 1; i >= 0; i--) {
@@ -1528,7 +1536,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
+window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, colliders, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
   get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
