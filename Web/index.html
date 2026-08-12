@@ -44,8 +44,26 @@
   .overlay p{margin:0;font-size:12px;line-height:2;color:#8fa9bc;letter-spacing:.06em}
   .overlay .go{margin-top:10px;padding:10px 26px;border:1px solid #2b6f85;border-radius:4px;color:#aef;cursor:pointer;font-family:inherit;font-size:13px;letter-spacing:.2em;background:#0c1a24}
   .overlay .go:hover{background:#12242f}
+  .overlay .go.alt{border-color:#25505f;color:#7fa8bb;font-size:11px;padding:8px 18px}
+  .mprow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  #lobby input{background:#0a141c;border:1px solid #234655;color:#cfe6f5;font-family:inherit;
+    font-size:12px;padding:9px 12px;border-radius:4px;letter-spacing:.14em;text-align:center;width:260px}
+  #linkRow{display:flex;gap:8px;align-items:center}
+  #linkBox{width:330px;font-size:10px;letter-spacing:.02em;color:#7fe7ff}
+  #playerList{list-style:none;margin:6px 0;padding:0;font-size:12px;line-height:2;min-height:60px;letter-spacing:.1em}
+  #playerList li{color:#8fa9bc}
+  #playerList li.ready{color:#7fffc4}
+  #playerList li.me{font-weight:700}
+  #lobbyStatus{min-height:16px;color:#ffd27f;font-size:11px}
   #msg{position:absolute;top:78px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:.14em;color:#ffd27f;opacity:0;transition:opacity .3s}
   .hidden{display:none !important}
+  /* marcador multijugador (arriba a la derecha) */
+  #score{position:absolute;right:20px;top:16px;font-size:11px;line-height:1.7;letter-spacing:.1em;color:#8fb2c6;text-align:right;display:none}
+  #score b{color:#7fe7ff}
+  #score .me{color:#fff}
+  #score .dead{opacity:.45}
+  body.mp #score{display:block}
+  body.touch #score{font-size:9px;top:64px}
   /* aviso de repostaje junto a tu capital */
   #resupply{position:absolute;left:50%;bottom:170px;transform:translateX(-50%);font-size:11px;letter-spacing:.24em;color:#7fffc4;opacity:0;transition:opacity .25s;animation:pulse 1.4s ease-in-out infinite}
   @keyframes pulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.7)}}
@@ -117,6 +135,7 @@
   <div id="resupply">◆ RESUPPLY ◆</div>
   <canvas id="radar" width="220" height="220"></canvas>
   <div id="enemyArrow">▲</div>
+  <div id="score"></div>
 </div>
 
 <div id="touchUI">
@@ -133,6 +152,26 @@
   Fleet battle: your squadron against theirs, capital against capital.<br>
   Wipe out the enemy squadron.</p>
   <button class="go" id="startBtn">ENTER COCKPIT</button>
+  <div class="mprow">
+    <button class="go alt" id="hostBtn">HOST A GAME</button>
+    <button class="go alt" id="joinBtn">JOIN A GAME</button>
+  </div>
+</div>
+
+<div class="overlay hidden" id="lobby">
+  <h1 id="lobbyTitle">LOBBY</h1>
+  <p id="lobbyHint">Share the link below. Up to 8 pilots.</p>
+  <div id="linkRow" class="hidden">
+    <input id="linkBox" readonly>
+    <button class="go alt" id="copyBtn">COPY</button>
+  </div>
+  <input id="nameBox" maxlength="12" placeholder="YOUR CALLSIGN">
+  <ul id="playerList"></ul>
+  <p id="lobbyStatus"></p>
+  <div class="mprow">
+    <button class="go" id="lobbyGo">READY</button>
+    <button class="go alt" id="lobbyBack">BACK</button>
+  </div>
 </div>
 
 <div class="overlay hidden" id="end">

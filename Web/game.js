@@ -10,6 +10,8 @@ import {
 import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { net, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
+  writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1141,6 +1143,8 @@ function pickTarget(f) {
   let best = null, bestD = Infinity;
   const candidates = fighters.filter((o) => o.alive && o.faction !== f.faction);
   if (f.faction === 'enemy' && !player.dead) candidates.push(playerEntity);
+  // los pilotos remotos también son blanco para el bando enemigo
+  if (f.faction === 'enemy') for (const rp of remotePilots) if (rp.alive) candidates.push(rp);
   for (const c of candidates) {
     const d = f.obj.position.distanceToSquared(c.obj.position);
     if (d < bestD) { bestD = d; best = c; }
@@ -1522,6 +1526,340 @@ const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
 }));
 scene.add(dust);
 
+/* ========================= MULTIJUGADOR (P2P) =========================
+   Estrella con anfitrión: él simula la flota de NPC y las capitales y reparte
+   instantáneas; cada jugador manda SU vuelo (validarlo en el anfitrión daría
+   goma elástica) y quien dispara resuelve sus propios impactos contra otros
+   jugadores, que es lo que se siente honesto con 100 ms de latencia. */
+const remotePilots = [];              // { id, name, obj, vel, alive, hull, kills, deaths, prev, next, t }
+const pilotTint = [0x7fe7ff, 0xffc46f, 0x9dff7f, 0xff8fd0, 0xc9a0ff, 0xffe97f, 0x7fffe0, 0xff9f7f];
+let mpActive = false, netSendT = 0, snapT = 0, snapSeq = 0;
+
+function makeRemotePilot(id, name, idx) {
+  const obj = allyTemplate.clone();
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    const n = o.material.name || '';
+    if (n.includes('Emissive_Cyan') || n.includes('EngineCore')) {
+      o.material = o.material.clone();
+      o.material.emissive = new THREE.Color(pilotTint[idx % pilotTint.length]);
+    }
+  });
+  scene.add(obj);
+  const rp = {
+    id, name, obj, idx, alive: true, hull: 100,
+    vel: new THREE.Vector3(), kills: 0, deaths: 0,
+    prevPos: obj.position.clone(), nextPos: obj.position.clone(),
+    prevQ: obj.quaternion.clone(), nextQ: obj.quaternion.clone(),
+    lerpT: 1, faction: 'ally', isPilot: true,
+  };
+  remotePilots.push(rp);
+  return rp;
+}
+function pilotById(id) { return remotePilots.find((p) => p.id === id); }
+function removeRemotePilot(id) {
+  const i = remotePilots.findIndex((p) => p.id === id);
+  if (i < 0) return;
+  scene.remove(remotePilots[i].obj);
+  remotePilots.splice(i, 1);
+}
+
+/* ---------------- instantánea de la flota (anfitrión → invitados) ----------------
+   Solo posición: los cazas del enjambre se orientan en el invitado según su
+   propio desplazamiento, que es hacia dónde vuelan igualmente. 8 bytes por nave
+   en vez de los ~60 que costaría en JSON. */
+function encodeFleet() {
+  const alive = [];
+  for (let i = 0; i < swarm.length; i++) if (swarm[i].alive) alive.push(i);
+  const heroes = [];
+  for (let i = 0; i < fighters.length; i++) if (fighters[i].alive) heroes.push(i);
+  const buf = new ArrayBuffer(9 + alive.length * 8 + 2 + heroes.length * 15 + 12);
+  const v = new DataView(buf);
+  let o = 0;
+  v.setUint8(o, 1); o += 1;                       // tipo: instantánea de flota
+  v.setUint32(o, snapSeq++, true); o += 4;
+  v.setUint16(o, alive.length, true); o += 2;
+  for (const i of alive) {
+    v.setUint16(o, i, true); o += 2;
+    o = writePos(v, o, swarm[i].obj.position);
+  }
+  v.setUint16(o, heroes.length, true); o += 2;
+  for (const i of heroes) {
+    v.setUint8(o, i); o += 1;
+    o = writePos(v, o, fighters[i].obj.position);
+    o = writeQuat(v, o, fighters[i].obj.quaternion);
+  }
+  v.setUint16(o, Math.max(0, capitals.ally.hp), true); o += 2;
+  v.setUint16(o, Math.max(0, capitals.enemy.hp), true); o += 2;
+  v.setUint8(o, (capitals.ally.alive ? 1 : 0) | (capitals.enemy.alive ? 2 : 0)); o += 1;
+  v.setUint16(o, kills, true); o += 2;
+  v.setUint16(o, waveEnemyTotal, true); o += 2;
+  return buf;
+}
+function decodeFleet(buf) {
+  const v = new DataView(buf);
+  let o = 1;
+  const seq = v.getUint32(o, true); o += 4;
+  if (seq < snapSeq) return; // instantánea vieja adelantada por la red
+  snapSeq = seq;
+  const seen = new Set();
+  const n = v.getUint16(o, true); o += 2;
+  for (let k = 0; k < n; k++) {
+    const i = v.getUint16(o, true); o += 2;
+    const s = swarm[i];
+    if (!s) { o += 6; continue; }
+    o = readPos(v, o, tv2);
+    // orientar según el desplazamiento: los cazas miran hacia donde van
+    if (!s.alive) { s.obj.position.copy(tv2); s.alive = true; }
+    tv3.copy(tv2).sub(s.obj.position);
+    if (tv3.lengthSq() > 0.02) {
+      lookM.lookAt(zeroV, tv3.negate(), s.obj.up);
+      s.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), 0.5);
+    }
+    s.obj.position.copy(tv2);
+    seen.add(i);
+  }
+  for (let i = 0; i < swarm.length; i++) if (!seen.has(i)) swarm[i].alive = false;
+  const hn = v.getUint16(o, true); o += 2;
+  const seenH = new Set();
+  for (let k = 0; k < hn; k++) {
+    const i = v.getUint8(o); o += 1;
+    const f = fighters[i];
+    if (!f) { o += 13; continue; }
+    o = readPos(v, o, f.obj.position);
+    o = readQuat(v, o, f.obj.quaternion);
+    if (!f.alive) { f.alive = true; scene.add(f.obj); }
+    seenH.add(i);
+  }
+  for (let i = 0; i < fighters.length; i++) {
+    if (!seenH.has(i) && fighters[i].alive) { fighters[i].alive = false; scene.remove(fighters[i].obj); }
+  }
+  capitals.ally.hp = v.getUint16(o, true); o += 2;
+  capitals.enemy.hp = v.getUint16(o, true); o += 2;
+  const flags = v.getUint8(o); o += 1;
+  for (const [cap, bit] of [[capitals.ally, 1], [capitals.enemy, 2]]) {
+    const alive = !!(flags & bit);
+    if (!alive && cap.alive) { cap.alive = false; cap.dying = 4.2; }
+    if (cap.bar) cap.bar.style.width = `${Math.max(0, (cap.hp / cap.maxHp) * 100)}%`;
+  }
+  kills = v.getUint16(o, true); o += 2;
+  waveEnemyTotal = v.getUint16(o, true); o += 2;
+  hud.kills.textContent = kills;
+  el('killTotal').textContent = waveEnemyTotal;
+}
+const zeroV = new THREE.Vector3();
+
+/* -------------------- envío y recepción por fotograma -------------------- */
+function netTick(dt) {
+  if (!mpActive) return;
+  netSendT -= dt;
+  if (netSendT <= 0) {
+    netSendT = 1 / 20; // 20 Hz: suficiente con interpolación
+    netSend({
+      t: 'p',
+      p: [+ship.position.x.toFixed(1), +ship.position.y.toFixed(1), +ship.position.z.toFixed(1)],
+      q: [+ship.quaternion.x.toFixed(3), +ship.quaternion.y.toFixed(3), +ship.quaternion.z.toFixed(3), +ship.quaternion.w.toFixed(3)],
+      h: Math.round(player.hull), d: player.dead ? 1 : 0,
+    });
+  }
+  if (net.role === 'host') {
+    snapT -= dt;
+    if (snapT <= 0) { snapT = 1 / 8; netSend(encodeFleet()); }
+  }
+  // interpolación de los pilotos remotos entre instantáneas
+  for (const rp of remotePilots) {
+    rp.lerpT = Math.min(1, rp.lerpT + dt * 20);
+    rp.obj.position.lerpVectors(rp.prevPos, rp.nextPos, rp.lerpT);
+    rp.obj.quaternion.slerpQuaternions(rp.prevQ, rp.nextQ, rp.lerpT);
+    rp.obj.visible = rp.alive;
+  }
+}
+
+function onNetMessage(from, d) {
+  if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
+    if (net.role === 'guest') decodeFleet(d.buffer || d);
+    return;
+  }
+  switch (d.t) {
+    case 'p': { // estado de vuelo de un piloto
+      const rp = pilotById(from) || (net.players.has(from)
+        ? makeRemotePilot(from, net.players.get(from).name, net.players.size) : null);
+      if (!rp) return;
+      rp.prevPos.copy(rp.obj.position);
+      rp.nextPos.set(d.p[0], d.p[1], d.p[2]);
+      rp.prevQ.copy(rp.obj.quaternion);
+      rp.nextQ.set(d.q[0], d.q[1], d.q[2], d.q[3]);
+      rp.lerpT = 0;
+      rp.hull = d.h;
+      rp.alive = !d.d;
+      if (net.role === 'host') netSend({ ...d, from }, from); // el anfitrión reparte
+      break;
+    }
+    case 'shot': { // disparo ajeno: solo visual
+      tv1.set(d.o[0], d.o[1], d.o[2]);
+      tv2.set(d.v[0], d.v[1], d.v[2]);
+      fireLaser(tv1.clone(), tv2.normalize().clone(), 350, 'ally');
+      if (net.role === 'host') netSend({ ...d, from }, from);
+      break;
+    }
+    case 'hit': { // alguien dice que te ha dado (quien dispara resuelve)
+      if (d.to === net.self) { damagePlayer(d.dmg); if (player.dead) netSend({ t: 'died', by: from }); }
+      else if (net.role === 'host') netSend(d, from);
+      break;
+    }
+    case 'died': {
+      const victim = net.players.get(d.from || from);
+      const killer = net.players.get(d.by);
+      if (killer) killer.kills = (killer.kills || 0) + 1;
+      if (victim) victim.deaths = (victim.deaths || 0) + 1;
+      message(`${killer ? killer.name : 'SOMEONE'} DOWNED ${victim ? victim.name : 'A PILOT'}`);
+      if (net.role === 'host') { netSend({ ...d, from: d.from || from }, from); broadcastLobby(); }
+      drawScore();
+      break;
+    }
+    default: break;
+  }
+}
+
+// tu disparo contra otro jugador lo resuelves tú y le mandas el daño
+function netHitPilot(rp, dmg) {
+  netSend({ t: 'hit', to: rp.id, dmg });
+  flash(rp.obj.position, true, 5, 0.2);
+}
+
+function drawScore() {
+  const box = el('score');
+  if (!mpActive) { box.style.display = 'none'; return; }
+  const rows = [...net.players.values()]
+    .sort((a, b) => (b.kills || 0) - (a.kills || 0))
+    .map((p) => {
+      const me = p.id === net.self ? ' me' : '';
+      const rp = pilotById(p.id);
+      const dead = (p.id !== net.self && rp && !rp.alive) || (p.id === net.self && player.dead) ? ' dead' : '';
+      return `<div class="${me}${dead}">${p.name} <b>${p.kills || 0}</b>/${p.deaths || 0}</div>`;
+    });
+  box.innerHTML = rows.join('');
+}
+
+/* al caer en multijugador vuelves al hangar: 3 s de espera y otra vez dentro */
+let respawnT = 0;
+function respawnPlayer() {
+  player.dead = true;
+  ship.visible = false;
+  flash(ship.position, true, 34, 0.8);
+  sfxExplosion(2.2, 1);
+  addShake(1.2);
+  respawnT = 3;
+  const me = net.players.get(net.self);
+  if (me) { me.deaths = (me.deaths || 0) + 1; if (net.role === 'host') broadcastLobby(); }
+  message('SHIP LOST — RESPAWNING');
+  drawScore();
+}
+function respawnTick(dt) {
+  if (!mpActive || respawnT <= 0) return;
+  respawnT -= dt;
+  if (respawnT > 0) return;
+  const home = capitals.ally.alive ? capitals.ally.group.position : new THREE.Vector3(-500, -140, -1100);
+  ship.position.set(home.x + (Math.random() - 0.5) * 300, home.y + 200, home.z + 380);
+  ship.quaternion.identity();
+  player.vel.set(0, 0, 0);
+  player.angVel.set(0, 0, 0);
+  player.hull = 100;
+  player.shield = 100;
+  player.dead = false;
+  ship.visible = true;
+  missileAmmo = 8;
+  if (hud.missiles) hud.missiles.textContent = missileAmmo;
+  message('BACK IN THE FIGHT');
+  drawScore();
+}
+
+/* ------------------------------ sala ------------------------------ */
+function lobbyRefresh() {
+  const list = el('playerList');
+  list.innerHTML = [...net.players.values()].map((p) =>
+    `<li class="${p.ready ? 'ready' : ''} ${p.id === net.self ? 'me' : ''}">${p.ready ? '✓' : '·'} ${p.name}${p.id === net.id ? ' (host)' : ''}</li>`).join('');
+  const n = net.players.size;
+  el('lobbyStatus').textContent = net.role === 'host'
+    ? `${n}/8 pilots · you all fly for the allied fleet — free for all`
+    : `${n}/8 pilots · waiting for the host to launch`;
+  el('lobbyGo').textContent = net.role === 'host' ? 'LAUNCH' : (net.players.get(net.self)?.ready ? 'NOT READY' : 'READY');
+  drawScore();
+}
+
+function beginMultiplayer() {
+  mpActive = true;
+  document.body.classList.add('mp');
+  el('lobby').classList.add('hidden');
+  document.getElementById('start').classList.add('hidden');
+  // separar las salidas para que no aparezcan unos dentro de otros
+  const idx = [...net.players.keys()].indexOf(net.self);
+  ship.position.set(-80 + idx * 55, 60 + (idx % 3) * 30, -650 - (idx % 2) * 40);
+  initAudio();
+  if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
+  lockPointer();
+  started = true;
+  drawScore();
+  message(`${net.players.size} PILOTS IN THE FIELD`);
+}
+
+function wireLobby() {
+  const show = (title, hint, link) => {
+    el('lobbyTitle').textContent = title;
+    el('lobbyHint').textContent = hint;
+    el('linkRow').classList.toggle('hidden', !link);
+    el('lobby').classList.remove('hidden');
+    document.getElementById('start').classList.add('hidden');
+  };
+  const nameOf = () => (el('nameBox').value || 'PILOT').toUpperCase().slice(0, 12);
+  net.onLobby = lobbyRefresh;
+  net.onMessage = onNetMessage;
+  net.onStart = () => beginMultiplayer();
+  net.onLeave = (id) => { removeRemotePilot(id); drawScore(); };
+  net.onError = (msg) => { el('lobbyStatus').textContent = msg; };
+
+  el('hostBtn').onclick = async () => {
+    show('HOSTING', 'Share this link with your friends. Up to 8 pilots.', true);
+    try {
+      const id = await hostGame(nameOf());
+      const url = `${location.origin}${location.pathname}?room=${id}`;
+      el('linkBox').value = url;
+      lobbyRefresh();
+    } catch { el('lobbyStatus').textContent = 'Could not open the room'; }
+  };
+  el('joinBtn').onclick = () => {
+    const room = prompt('Room code or link:');
+    if (room) joinRoom(room.includes('room=') ? room.split('room=')[1].split(/[&#]/)[0] : room.trim());
+  };
+  el('copyBtn').onclick = () => {
+    el('linkBox').select();
+    navigator.clipboard?.writeText(el('linkBox').value);
+    el('copyBtn').textContent = 'COPIED';
+    setTimeout(() => { el('copyBtn').textContent = 'COPY'; }, 1200);
+  };
+  el('lobbyGo').onclick = () => {
+    if (net.role === 'host') startMatch(1);
+    else { const me = net.players.get(net.self); setReady(!(me && me.ready)); }
+  };
+  el('lobbyBack').onclick = () => {
+    netLeave();
+    el('lobby').classList.add('hidden');
+    document.getElementById('start').classList.remove('hidden');
+  };
+
+  async function joinRoom(id) {
+    show('JOINING', 'Connecting to the host…', false);
+    try { await joinGame(id, nameOf()); lobbyRefresh(); }
+    catch { el('lobbyStatus').textContent = 'Could not join that room'; }
+  }
+  // enlace de invitación: ?room=<id>
+  const room = new URLSearchParams(location.search).get('room');
+  if (room) {
+    el('nameBox').value = 'PILOT ' + Math.floor(Math.random() * 90 + 10);
+    joinRoom(room);
+  }
+}
+
 /* ============================== HUD ============================== */
 const el = (id) => document.getElementById(id);
 const hud = {
@@ -1536,7 +1874,10 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, colliders, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
+window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, colliders,
+  net, encodeFleet, decodeFleet, onNetMessage, remotePilots, makeRemotePilot, drawScore,
+  set snapSeq(v) { snapSeq = v; }, get snapSeq() { return snapSeq; },
+  set mpActive(v) { mpActive = v; }, get mpActive() { return mpActive; }, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
   get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
@@ -1586,6 +1927,7 @@ function drawRadar() {
   for (const cap of [capitals.ally, capitals.enemy]) {
     if (cap.alive) radarPlot(cap.group.position, cap.faction === 'ally' ? '#9ff0ff' : '#ffb04c', true);
   }
+  for (const rp of remotePilots) if (rp.alive) radarPlot(rp.obj.position, '#ffffff', true);
   rctx.fillStyle = '#ffffff';
   rctx.fillRect(108.4, 108.4, 3.2, 3.2); // tú
 }
@@ -1643,6 +1985,21 @@ function drawMarkers() {
   for (const f of fighters) if (f.alive && f.faction === 'enemy') mark(f.obj.position, false);
   for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false, s.isGunship);
   if (capitals.enemy.alive) mark(capitals.enemy.group.position, true);
+  // pilotos rivales: marco blanco con su nombre — en todos contra todos, todos cuentan
+  for (const rp of remotePilots) {
+    if (!rp.alive) continue;
+    tmp.copy(rp.obj.position).project(camera);
+    if (tmp.z > 1 || Math.abs(tmp.x) > 1.05 || Math.abs(tmp.y) > 1.05) continue;
+    const sx = (tmp.x + 1) / 2 * markC.width, sy = (1 - tmp.y) / 2 * markC.height;
+    const s = THREE.MathUtils.clamp(6500 / rp.obj.position.distanceTo(ship.position), 8, 30);
+    mctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    mctx.lineWidth = 1.5;
+    mctx.strokeRect(sx - s, sy - s, s * 2, s * 2);
+    mctx.fillStyle = 'rgba(255,255,255,0.85)';
+    mctx.font = '10px monospace';
+    mctx.textAlign = 'center';
+    mctx.fillText(rp.name, sx, sy - s - 6);
+  }
 
   /* fijación de misil: anillo de carga en la mira + rombo sobre el objetivo */
   if (lockTarget) {
@@ -1720,6 +2077,8 @@ function damagePlayer(amount) {
 }
 function endGame(victory) {
   if (player.dead) return;
+  // en multijugador la muerte no acaba la partida: reapareces en tu capital
+  if (mpActive && !victory) { respawnPlayer(); return; }
   player.dead = true;
   // iOS/Safari móvil NO tiene Pointer Lock: llamarla a pelo rompía endGame
   // entero (sin explosión y sin pantalla final — el bug reportado)
@@ -1850,6 +2209,8 @@ function update(dt) {
       m.getWorldPosition(tmp);
       fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
       fireLaser(tmp, fwd.clone(), 350, 'ally', true);
+      if (mpActive) netSend({ t: 'shot', o: [+tmp.x.toFixed(1), +tmp.y.toFixed(1), +tmp.z.toFixed(1)],
+        v: [+fwd.x.toFixed(3), +fwd.y.toFixed(3), +fwd.z.toFixed(3)] });
     }
 
     for (const c of colliders) {
@@ -1891,8 +2252,10 @@ function update(dt) {
     }
   }
 
-  /* ---- escuadrones (dormidos hasta entrar en cabina) ---- */
-  if (started) {
+  /* ---- escuadrones (dormidos hasta entrar en cabina) ----
+     En un invitado la flota NO se simula: sus posiciones llegan del anfitrión,
+     que es el único árbitro. Simularla en paralelo divergería en segundos. */
+  if (started && net.role !== 'guest') {
     for (const f of fighters) {
       if (!f.alive) continue;
 
@@ -2041,9 +2404,6 @@ function update(dt) {
       }
     }
 
-    checkFlybys(dt);
-    updateLock(dt);
-
     /* cañones: flak antifighter + andanadas capital contra capital */
     turretTick(capitals.ally, dt);
     turretTick(capitals.enemy, dt);
@@ -2054,6 +2414,10 @@ function update(dt) {
       if (nextBoltEnemy <= 0) { nextBoltEnemy = 1.5 + Math.random(); capitalVolley(capitals.enemy, capitals.ally); }
     }
   }
+
+  if (started) { checkFlybys(dt); updateLock(dt); }
+  respawnTick(dt);
+  netTick(dt);
 
   /* ---- capitales tocadas: incendio en cadena y despedazamiento ---- */
   for (const cap of [capitals.ally, capitals.enemy]) {
@@ -2216,6 +2580,17 @@ function update(dt) {
         }
       }
     }
+    // duelo entre jugadores: quien dispara resuelve su impacto y manda el daño
+    if (!dead && l.isPlayer && mpActive) {
+      for (const rp of remotePilots) {
+        if (!rp.alive) continue;
+        if (segmentHitsSphere(segPrev, segStep, rp.obj.position, 8)) {
+          netHitPilot(rp, 12);
+          hitMarkT = 0.16;
+          dead = true; break;
+        }
+      }
+    }
     if (!dead && l.faction === 'enemy' && !player.dead) {
       if (segmentHitsSphere(segPrev, segStep, ship.position, 7)) {
         damagePlayer(12);
@@ -2329,6 +2704,8 @@ function tick() {
   updateEnemyArrow();
   renderer.render(scene, camera);
 }
+wireLobby(); // aquí abajo: necesita el ayudante `el` del HUD, que se define antes
+
 // simulación acelerada para pruebas: N segundos de batalla sin esperar al render
 window.__sb.step = (seconds) => {
   sfxMuted = true;
