@@ -44,10 +44,48 @@ let peer = null;
 const STUN = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
 ];
+/* Respaldo estático del mismo relé: si el API no responde (sin conexión al
+   arrancar, corte del panel), estas credenciales siguen sirviendo. */
 const FREE_TURN = [
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  { urls: 'turn:standard.relay.metered.ca:80', username: 'f35789351b0707b52cd2d2d1', credential: '3bMmCjhxgM1+aGpG' },
+  { urls: 'turn:standard.relay.metered.ca:80?transport=tcp', username: 'f35789351b0707b52cd2d2d1', credential: '3bMmCjhxgM1+aGpG' },
+  { urls: 'turn:standard.relay.metered.ca:443', username: 'f35789351b0707b52cd2d2d1', credential: '3bMmCjhxgM1+aGpG' },
+  { urls: 'turns:standard.relay.metered.ca:443?transport=tcp', username: 'f35789351b0707b52cd2d2d1', credential: '3bMmCjhxgM1+aGpG' },
 ];
+
+/* Relé TURN de Metered. La clave viaja al navegador por narices: cualquier
+   juego P2P en web expone sus credenciales de TURN (así son también los
+   ejemplos oficiales de Metered). Está acotada a TURN y con cuota mensual,
+   pero quien mire el código fuente puede gastarla: si un día ves consumo
+   raro, se rota desde el panel y se cambia aquí. */
+const METERED_APP = 'space-battle-sand';
+const METERED_KEY = '553222725c5b43b0cc42bf7e7d394ed28ac6';
+let meteredIce = [];
+
+export async function refreshTurn() {
+  // el navegador puede sobrescribir app/clave sin tocar el código (pruebas)
+  let app = METERED_APP, key = METERED_KEY;
+  try {
+    app = localStorage.getItem('sb_turn_app') || app;
+    key = localStorage.getItem('sb_turn_key') || key;
+  } catch { /* modo privado */ }
+  if (!app || !key) return;
+  try {
+    const r = await fetch(`https://${app}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`);
+    const j = await r.json();
+    if (Array.isArray(j) && j.length) {
+      meteredIce = j.filter((s) => s && s.urls);
+      note(`relé TURN listo (${meteredIce.length} servidores)`);
+    } else {
+      meteredIce = [];
+      note(`relé TURN rechazado: ${j && j.error ? j.error : 'respuesta inesperada'}`);
+    }
+  } catch {
+    meteredIce = [];
+    note('relé TURN: no se pudo consultar');
+  }
+}
 
 /* TURN propio, si lo hay. Se guarda en el navegador: en cuanto pegues unas
    credenciales, el multijugador funciona en cualquier red sin tocar código.
@@ -64,8 +102,10 @@ export function setTurn(text) {
 }
 export function iceConfig() {
   const own = getTurn();
-  return { iceServers: [...STUN, ...own, ...(own.length ? [] : FREE_TURN)], iceCandidatePoolSize: 4 };
+  const relays = [...meteredIce, ...own];
+  return { iceServers: [...STUN, ...relays, ...(relays.length ? [] : FREE_TURN)], iceCandidatePoolSize: 4 };
 }
+export function hasRelay() { return meteredIce.length > 0 || getTurn().length > 0; }
 
 export const diag = { log: [], onLog: () => {} };
 function note(msg) {
@@ -104,6 +144,7 @@ function watchIce(conn) {
 /* ------------------------------- anfitrión ------------------------------- */
 export async function hostGame(name) {
   net.name = name;
+  await refreshTurn(); // credenciales frescas antes de negociar
   const [p, id] = await newPeer();
   peer = p;
   net.role = 'host';
@@ -168,6 +209,7 @@ export function startMatch(seed) {
 /* -------------------------------- invitado -------------------------------- */
 export async function joinGame(hostId, name) {
   net.name = name;
+  await refreshTurn();
   const [p, id] = await newPeer();
   peer = p;
   net.role = 'guest';

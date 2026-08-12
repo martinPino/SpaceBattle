@@ -11,7 +11,7 @@ import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-text
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
-  iceConfig, getTurn, setTurn, writePos, readPos, writeQuat, readQuat } from './net.js';
+  iceConfig, getTurn, setTurn, refreshTurn, writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1682,8 +1682,12 @@ function onNetMessage(from, d) {
   }
   switch (d.t) {
     case 'p': { // estado de vuelo de un piloto
-      const rp = pilotById(from) || (net.players.has(from)
-        ? makeRemotePilot(from, net.players.get(from).name, net.players.size) : null);
+      // el anfitrión reenvía marcando el autor: sin esto, con 3+ jugadores el
+      // receptor atribuiría todo al anfitrión y verías un solo piloto
+      const src = d.from || from;
+      if (src === net.self) return;
+      const rp = pilotById(src) || (net.players.has(src)
+        ? makeRemotePilot(src, net.players.get(src).name, [...net.players.keys()].indexOf(src)) : null);
       if (!rp) return;
       rp.prevPos.copy(rp.obj.position);
       rp.nextPos.set(d.p[0], d.p[1], d.p[2]);
@@ -1696,6 +1700,7 @@ function onNetMessage(from, d) {
       break;
     }
     case 'shot': { // disparo ajeno: solo visual
+      if ((d.from || from) === net.self) return;
       tv1.set(d.o[0], d.o[1], d.o[2]);
       tv2.set(d.v[0], d.v[1], d.v[2]);
       fireLaser(tv1.clone(), tv2.normalize().clone(), 350, 'ally');
@@ -1823,6 +1828,7 @@ function wireLobby() {
     diag.log.length = 0;
     const say = (m) => { diag.log.push(m); diag.onLog(); };
     say('— connection test —');
+    await refreshTurn(); // el propio test dice si el relé responde
     const kinds = new Set();
     let mdns = false;
     try {
@@ -1854,14 +1860,22 @@ function wireLobby() {
     } catch (e) { say('fallo al sondear: ' + e); }
   };
 
-  // TURN propio: al pegarlo queda guardado en este navegador
+  /* Ajustes de relé: la clave de Metered va en el código (los invitados también
+     la necesitan), pero se puede corregir aquí sin volver a desplegar. */
   const turnBox = el('turnBox');
-  turnBox.value = (getTurn().map((s) => `${s.urls}|${s.username}|${s.credential}`).join('\n'));
-  el('saveTurnBtn').onclick = () => {
+  const keyBox = el('turnKeyBox');
+  try { keyBox.value = localStorage.getItem('sb_turn_key') || ''; } catch { /* modo privado */ }
+  turnBox.value = getTurn().map((s) => `${s.urls}|${s.username}|${s.credential}`).join('\n');
+  el('saveTurnBtn').onclick = async () => {
     setTurn(turnBox.value);
-    el('lobbyStatus').textContent = turnBox.value.trim()
-      ? 'TURN saved in this browser — host or join again'
-      : 'TURN cleared';
+    try {
+      const k = keyBox.value.trim();
+      if (k) localStorage.setItem('sb_turn_key', k); else localStorage.removeItem('sb_turn_key');
+    } catch { /* modo privado */ }
+    diag.log.length = 0;
+    await refreshTurn();
+    diag.onLog();
+    el('lobbyStatus').textContent = 'Saved — run TEST CONNECTION to check the relay';
   };
   net.onStart = () => beginMultiplayer();
   net.onLeave = (id) => { removeRemotePilot(id); drawScore(); };
