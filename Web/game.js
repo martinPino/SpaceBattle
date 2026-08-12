@@ -302,6 +302,53 @@ const player = {
   vel: new THREE.Vector3(), angVel: new THREE.Vector3(),
   shield: 100, hull: 100, dead: false, radius: 6,
 };
+
+/* ---- ascuas de daño: con el casco tocado, tu nave suelta chispas y humo ---- */
+const emberTex = radialGlow([1.0, 0.6, 0.28], 0.3);
+const emberTmp = new THREE.Vector3(); // propio: no compartir temporales entre sistemas
+const embers = [];
+for (let i = 0; i < 22; i++) {
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: emberTex, transparent: true, opacity: 0, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  spr.visible = false;
+  scene.add(spr);
+  embers.push({ spr, life: 0, total: 1, vel: new THREE.Vector3(), size: 1 });
+}
+let emberT = 0;
+function spawnEmber() {
+  const e = embers.find((x) => x.life <= 0);
+  if (!e) return;
+  e.total = 0.6 + Math.random() * 0.7;
+  e.life = e.total;
+  e.size = 0.9 + Math.random() * 1.6;
+  // brota del casco y queda atrás: hereda tu velocidad y se dispersa
+  e.spr.position.copy(ship.position)
+    .add(emberTmp.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 2.5, (Math.random() - 0.5) * 6)
+      .applyQuaternion(ship.quaternion));
+  e.vel.copy(player.vel).multiplyScalar(0.55)
+    .add(emberTmp.set((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8, -6 - Math.random() * 8)
+      .applyQuaternion(ship.quaternion));
+  e.spr.visible = true;
+}
+function updateEmbers(dt) {
+  // cuanto peor el casco, más ascuas (por debajo del 55% empieza a arder)
+  const hurt = Math.max(0, 1 - player.hull / 55);
+  if (!player.dead && started && hurt > 0) {
+    emberT -= dt;
+    if (emberT <= 0) { spawnEmber(); emberT = 0.1 - hurt * 0.07; }
+  }
+  for (const e of embers) {
+    if (e.life <= 0) continue;
+    e.life -= dt;
+    const k = Math.max(0, e.life / e.total);
+    e.spr.position.addScaledVector(e.vel, dt);
+    e.spr.material.opacity = k * 0.9;
+    e.spr.scale.setScalar(e.size * (1 + (1 - k) * 2.6)); // se expande al enfriarse
+    if (e.life <= 0) { e.spr.visible = false; e.spr.material.opacity = 0; }
+  }
+}
 const TUNE = {
   accel: 70, maxSpeed: 95, boostSpeed: 190, boostAccel: 160,
   strafe: 45, vertical: 45,
@@ -1058,6 +1105,7 @@ function killSwarmShip(s, byPlayer) {
   s.alive = false;
   flash(s.obj.position, true, s.isGunship ? 46 : 22, s.isGunship ? 0.9 : 0.55);
   sfxExplosion(s.isGunship ? 2.4 : 1.2, gainFor(s.obj.position, s.isGunship ? 2200 : 1400));
+  shakeFromBlast(s.obj.position, s.isGunship ? 0.75 : 0.4);
   if (s.faction === 'enemy') {
     if (byPlayer) message(s.isGunship ? 'ENEMY GUNSHIP DESTROYED' : 'SWARM FIGHTER DOWN');
     registerEnemyKill();
@@ -1100,6 +1148,7 @@ function damageFighter(f, dmg, atPos) {
   f.alive = false;
   flash(f.obj.position, true, 26, 0.6);
   sfxExplosion(1.5, gainFor(f.obj.position, 1500));
+  shakeFromBlast(f.obj.position, 0.45);
   scene.remove(f.obj);
   if (f.faction === 'enemy') {
     message('ENEMY INTERCEPTOR DOWN');
@@ -1446,6 +1495,7 @@ function breakApartCapital(cap) {
   for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].cap === cap) colliders.splice(i, 1);
   flash(center, true, 340, 1.5);
   sfxExplosion(4, Math.max(0.35, gainFor(center, 6000)));
+  addShake(center.distanceTo(ship.position) < 4000 ? 1.5 : 0.6); // 2,6 km de nave reventando
   message(cap.faction === 'enemy' ? 'ENEMY CAPITAL DESTROYED' : 'ALLIED CAPITAL LOST');
 }
 
@@ -1470,6 +1520,7 @@ const hud = {
   speed: el('speed'), boost: el('boost'), kills: el('killCount'),
   shield: el('shieldBar').firstElementChild, hull: el('hullBar').firstElementChild,
   msg: el('msg'), allies: el('allyCount'), missiles: el('missileCount'),
+  resupply: el('resupply'),
 };
 el('killTotal').textContent = waveEnemyTotal;
 capitals.ally.bar = el('allyCapBar').firstElementChild;
@@ -1477,7 +1528,8 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
+window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
+  get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1538,6 +1590,22 @@ sizeMarkers();
 function drawMarkers() {
   mctx.clearRect(0, 0, markC.width, markC.height);
   if (!started || player.dead) return;
+
+  /* marca de acierto: cuatro aspas en la mira cuando TU disparo conecta */
+  if (hitMarkT > 0) {
+    const k = Math.min(1, hitMarkT / 0.16);
+    const cx = markC.width / 2, cy = markC.height / 2;
+    const r0 = 9 + (1 - k) * 5, r1 = r0 + 8;
+    mctx.strokeStyle = `rgba(255,255,255,${0.35 + k * 0.6})`;
+    mctx.lineWidth = 2;
+    mctx.beginPath();
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      mctx.moveTo(cx + sx * r0, cy + sy * r0);
+      mctx.lineTo(cx + sx * r1, cy + sy * r1);
+    }
+    mctx.stroke();
+  }
+
   mctx.lineWidth = 1.5;
   const mark = (pos, big, heavy) => {
     const d = pos.distanceTo(ship.position);
@@ -1635,8 +1703,11 @@ function damagePlayer(amount) {
   if (hadShield && player.shield <= 0) { // el golpe que lo rompe (también tras regenerar)
     sfxShieldDown();
     message('SHIELD DOWN');
+    addShake(0.9);
   }
   sfxHit();
+  // sin escudo el casco encaja el golpe: se nota más
+  addShake(THREE.MathUtils.clamp(amount / 45, 0.12, 0.7) * (player.shield > 0 ? 1 : 1.6));
   if (player.hull <= 0) endGame(false);
 }
 function endGame(victory) {
@@ -1678,7 +1749,18 @@ function segmentHitsSphere(p0, step, center, r) {
   return segTmp.lengthSq() < r * r;
 }
 let fireCooldown = 0, muzzleFlip = 0, shieldRegen = 0;
+let resupplyT = 0, wasDocked = false;
 let clockTime = 0;
+/* ---- impacto: sacudida de cámara y marca de acierto ---- */
+const camBase = new THREE.Vector3();
+let shake = 0, hitMarkT = 0;
+function addShake(amount) { shake = Math.min(1.6, shake + amount); }
+// una explosión cercana también se siente (cae con la distancia)
+function shakeFromBlast(pos, power) {
+  const d = pos.distanceTo(ship.position);
+  if (d > 320) return;
+  addShake(power * (1 - d / 320));
+}
 const clock = new THREE.Clock();
 
 function update(dt) {
@@ -1777,6 +1859,28 @@ function update(dt) {
 
     shieldRegen += dt;
     if (shieldRegen > 4 && player.shield < 100) player.shield = Math.min(100, player.shield + dt * 8);
+
+    /* ---- repostaje: acércate a tu capital y te reparan y rearman ----
+       El casco NO se cura de otra forma, así que aparece una decisión real:
+       seguir presionando o replegarse. Si pierdes tu capital, se acabó. */
+    const home = capitals.ally;
+    const docked = home.alive && ship.position.distanceTo(home.group.position) < 900;
+    if (docked) {
+      player.hull = Math.min(100, player.hull + dt * 7);
+      player.shield = Math.min(100, player.shield + dt * 16);
+      resupplyT += dt;
+      if (resupplyT > 2.2 && missileAmmo < 8) {
+        resupplyT = 0;
+        missileAmmo++;
+        if (hud.missiles) hud.missiles.textContent = missileAmmo;
+        sfxLock();
+      }
+      if (!wasDocked) message('RESUPPLYING — REPAIR AND REARM');
+    } else resupplyT = 0;
+    if (docked !== wasDocked) {
+      wasDocked = docked;
+      hud.resupply.style.opacity = docked ? 1 : 0;
+    }
   }
 
   /* ---- escuadrones (dormidos hasta entrar en cabina) ---- */
@@ -2049,6 +2153,7 @@ function update(dt) {
         else damageFighter(ms.target, 6, ms.mesh.position);
       } else {
         missileHit(ms.target, ms.mesh.position); // un misil, una baja — élite o enjambre
+        hitMarkT = 0.3;
       }
       flash(ms.mesh.position, true, 14, 0.35);
       sfxExplosion(1.6, gainFor(ms.mesh.position, 1600));
@@ -2081,6 +2186,7 @@ function update(dt) {
         if (!f.alive || f.faction === l.faction) continue;
         if (segmentHitsSphere(segPrev, segStep, f.obj.position, 8)) {
           damageFighter(f, 1, l.mesh.position);
+          if (l.isPlayer) hitMarkT = 0.16;
           dead = true; break;
         }
       }
@@ -2097,6 +2203,7 @@ function update(dt) {
           s.hp--;
           if (s.hp <= 0) killSwarmShip(s, l.isPlayer);
           else flash(l.mesh.position, false, 5, 0.15);
+          if (l.isPlayer) hitMarkT = 0.16;
           dead = true; break;
         }
       }
@@ -2113,7 +2220,10 @@ function update(dt) {
       for (const c of colliders) {
         if (segmentHitsSphere(segPrev, segStep, c.pos, c.r)) {
           // los cascos de capital acusan el fuego láser rival (daño de picadura)
-          if (c.cap && c.cap.alive && c.cap.faction !== l.faction) damageCapital(c.cap, 1, l.mesh.position);
+          if (c.cap && c.cap.alive && c.cap.faction !== l.faction) {
+            damageCapital(c.cap, 1, l.mesh.position);
+            if (l.isPlayer) hitMarkT = 0.16;
+          }
           flash(l.mesh.position, false, 4, 0.15);
           dead = true; break;
         }
@@ -2137,6 +2247,8 @@ function update(dt) {
     if (s.life <= 0) { s.active = false; s.spr.visible = false; s.light.intensity = 0; }
   }
 
+  updateEmbers(dt);
+
   /* ---- polvo envolvente ---- */
   const dp = dustGeo.attributes.position;
   for (let i = 0; i < dustN; i++) {
@@ -2151,15 +2263,26 @@ function update(dt) {
   }
   dp.needsUpdate = true;
 
-  /* ---- cámara third-person (compensada por velocidad) ---- */
+  /* ---- cámara third-person (compensada por velocidad) ----
+     La posición BASE se guarda aparte: si la sacudida se sumara a
+     camera.position, el lerp del frame siguiente partiría de la posición
+     temblada y el temblor se realimentaría hasta descuadrar la cámara. */
   const camT = 1 - Math.exp(-5 * dt);
   tmp.set(0, 4, -14).applyQuaternion(ship.quaternion).add(ship.position)
     .addScaledVector(player.vel, 1 / 5);
-  camera.position.lerp(tmp, camT);
-  const fromShip = tmp2.copy(camera.position).sub(ship.position);
+  camBase.lerp(tmp, camT);
+  const fromShip = tmp2.copy(camBase).sub(ship.position);
   const d = fromShip.length();
-  if (d < 9) camera.position.copy(ship.position).addScaledVector(fromShip.normalize(), 9);
-  else if (d > 34) camera.position.copy(ship.position).addScaledVector(fromShip.normalize(), 34);
+  if (d < 9) camBase.copy(ship.position).addScaledVector(fromShip.normalize(), 9);
+  else if (d > 34) camBase.copy(ship.position).addScaledVector(fromShip.normalize(), 34);
+  camera.position.copy(camBase);
+  if (shake > 0) {
+    shake = Math.max(0, shake - dt * 2.6);
+    const s = shake * shake * 3.4; // decaimiento suave: golpe seco, no vibración
+    camera.position.x += (Math.random() - 0.5) * s;
+    camera.position.y += (Math.random() - 0.5) * s;
+    camera.position.z += (Math.random() - 0.5) * s;
+  }
   fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
   tmp.copy(ship.position).addScaledVector(fwd, 40);
   lookM.lookAt(camera.position, tmp, tmp2.set(0, 1, 0).applyQuaternion(ship.quaternion));
@@ -2190,7 +2313,9 @@ function update(dt) {
 }
 function tick() {
   requestAnimationFrame(tick);
-  update(Math.min(clock.getDelta(), 0.05));
+  const dt = Math.min(clock.getDelta(), 0.05);
+  hitMarkT = Math.max(0, hitMarkT - dt);
+  update(dt);
   drawRadar();          // solo una vez por frame RENDERIZADO (no en __sb.step)
   drawMarkers();
   updateEnemyArrow();
