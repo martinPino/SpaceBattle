@@ -364,8 +364,13 @@ const player = {
 const SHIPS = [
   { id: 'kit', name: 'INTERCEPTOR', tag: 'kit · all-rounder', file: null, yaw: 0, scale: 1 },
   { id: 'fighterjet', name: 'FIGHTER JET X', tag: 'sleek · atmospheric', file: './assets/ships/ship-fighterjet.glb', yaw: 0, scale: 1 },
-  { id: 'vanguard', name: 'OBSIDIAN VANGUARD', tag: 'heavy · armored', file: './assets/ships/ship-vanguard.glb', yaw: 0, scale: 1 },
-  { id: 'mothership', name: 'KSS-X', tag: 'exotic · alien hull', file: './assets/ships/ship-mothership.glb', yaw: 0, scale: 1 },
+  // casi cuadrada (11,8 × 12), así que la heurística del eje largo no vale:
+  // el yaw sale de mirarla desde atrás — con −90 queda simétrica y de frente
+  { id: 'vanguard', name: 'OBSIDIAN VANGUARD', tag: 'heavy · armored', file: './assets/ships/ship-vanguard.glb', yaw: -90, scale: 1 },
+  // eje largo en X tras el preproceso (12 de ancho por 8,4 de largo): volaba de
+  // costado. El signo del giro sale de mirarla desde atrás, no de la caja
+  // envolvente — deducirlo del bbox me dio el contrario
+  { id: 'mothership', name: 'KSS-X', tag: 'exotic · alien hull', file: './assets/ships/ship-mothership.glb', yaw: -90, scale: 1 },
 ];
 let currentShipId = 'kit';
 let shipBody = null;                 // cuerpo añadido (null = el del kit)
@@ -526,6 +531,17 @@ addEventListener('mousemove', (e) => {
   if (!document.pointerLockElement) return;
   mouseDX += e.movementX; mouseDY += e.movementY;
 });
+// en móvil se juega en horizontal: si el navegador deja fijar la orientación,
+// se fija (Android en pantalla completa); iOS la ignora y queda el aviso de girar
+function lockLandscape() {
+  if (!isTouch) return;
+  try {
+    const el2 = document.documentElement;
+    if (el2.requestFullscreen) el2.requestFullscreen().then(() => {
+      screen.orientation?.lock?.('landscape').catch(() => {});
+    }).catch(() => {});
+  } catch { /* navegador sin pantalla completa */ }
+}
 function lockPointer() {
   if (isTouch) return; // en táctil no hay pointer lock: manda el stick
   const p = renderer.domElement.requestPointerLock();
@@ -535,6 +551,7 @@ document.getElementById('startBtn').onclick = () => {
   document.getElementById('start').classList.add('hidden');
   initAudio(); // el gesto del usuario desbloquea el audio del navegador
   if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
+  lockLandscape();
   lockPointer();
   started = true;
 };
@@ -1991,6 +2008,7 @@ function beginMultiplayer() {
   ship.position.set(-80 + idx * 55, 60 + (idx % 3) * 30, -650 - (idx % 2) * 40);
   initAudio();
   if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
+  lockLandscape();
   lockPointer();
   started = true;
   drawScore();
