@@ -550,8 +550,7 @@ function lockPointer() {
 }
 document.getElementById('startBtn').onclick = () => {
   document.getElementById('start').classList.add('hidden');
-  initAudio(); // el gesto del usuario desbloquea el audio del navegador
-  if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
+  enterAudio(); // el gesto del usuario desbloquea el audio del navegador
   lockLandscape();
   lockPointer();
   started = true;
@@ -568,11 +567,13 @@ addEventListener('blur', () => {
   for (const k in keys) keys[k] = false;
   firing = false;
 });
-// pestaña oculta: rAF se pausa pero el AudioContext seguiría sonando (drone eterno)
+// pestaña oculta: rAF se pausa pero el AudioContext seguiría sonando (drone eterno).
+// Al volver NO basta con resume(): el navegador puede exigir otro gesto y puede
+// haber matado los bucles, así que se pasa por la recuperación completa.
 document.addEventListener('visibilitychange', () => {
   if (!audio) return;
   if (document.hidden) audio.ctx.suspend();
-  else audio.ctx.resume();
+  else resumeAudio();
 });
 function onResize() {
   camera.aspect = innerWidth / innerHeight;
@@ -645,34 +646,114 @@ function flash(pos, warm = false, size = 6, time = 0.18) {
 /* ============================== sonido ==============================
    100% sintetizado con WebAudio — como los modelos: el audio también es código.
    Presupuesto de láseres por segundo (184 tiradores ahí fuera) y atenuación
-   por distancia al jugador. Se inicia con el gesto del botón de inicio. */
+   por distancia al jugador. Se inicia con el gesto del botón de inicio.
+
+   EL JUEGO SE QUEDABA MUDO. Tres razones distintas, y desde el sofá las tres se
+   ven igual — silencio total, como si el audio estuviera roto:
+     1) Autoplay. Un AudioContext creado fuera de un gesto nace 'suspended' y ya
+        no sale de ahí solo. Le pasaba al INVITADO de una partida en red: entra
+        en cabina por un mensaje del anfitrión, no por un clic suyo, así que
+        beginMultiplayer() creaba el contexto sin gesto y nadie volvía a tocarlo.
+     2) Interrupciones. Una llamada, bloquear el móvil o cambiar de app paran el
+        contexto; en iOS resume() solo funciona dentro de otro gesto, y además
+        las fuentes en bucle (el motor y la música) se quedan muertas aunque el
+        contexto vuelva: el juego "arranca" pero sin banda sonora.
+     3) El interruptor de silencio del iPhone, que calla TODO el WebAudio salvo
+        que se declare la sesión de audio como reproducción.
+   Ahora: cualquier gesto reintenta el desbloqueo mientras no suene, los bucles
+   se reconstruyen tras una interrupción y, si aun así sigue mudo, el HUD lo dice
+   en vez de dejar al piloto pensando que el juego está roto. */
 const AC = window.AudioContext || window.webkitAudioContext;
 let audio = null;
-let sfxMuted = false; // __sb.step() simula minutos en un instante: sin esto, cientos de nodos a la vez
+let sfxMuted = false;      // __sb.step() simula minutos en un instante: sin esto, cientos de nodos a la vez
+let audioWanted = false;   // ya estamos en cabina: a partir de aquí hay que sonar
+let musicFailed = false;   // la pista del usuario no cargó: toca la generativa
+let audioInterrupted = false; // el sistema paró el contexto: al volver, bucles nuevos
+let unlockArmed = false;
+let audioBlocked = false;  // aviso del HUD ya dado, para no repetirlo cada frame
+let audioBlockT = 0;
+
+// Nada se programa con el contexto parado: mientras está suspendido
+// ctx.currentTime está congelado, así que todo lo encolado sonaría de golpe —
+// una escopetada de cien disparos— en cuanto el navegador lo reanudara.
+function sfxOff() { return sfxMuted || !audio || audio.ctx.state !== 'running'; }
+
+/* -------- desbloqueo: cualquier gesto vale mientras no esté sonando -------- */
+const UNLOCK_EVENTS = ['pointerdown', 'touchend', 'mousedown', 'keydown'];
+function onUnlockGesture() { resumeAudio(); }
+function armAudioUnlock() {
+  if (unlockArmed) return;
+  unlockArmed = true;
+  // en captura: los botones táctiles del HUD se comen sus propios eventos
+  for (const ev of UNLOCK_EVENTS) addEventListener(ev, onUnlockGesture, { capture: true, passive: true });
+}
+function disarmAudioUnlock() {
+  if (!unlockArmed) return;
+  unlockArmed = false;
+  for (const ev of UNLOCK_EVENTS) removeEventListener(ev, onUnlockGesture, { capture: true });
+}
+function resumeAudio() {
+  initAudio();
+  if (!audio) return;
+  if (audio.ctx.state === 'running') { disarmAudioUnlock(); return; }
+  armAudioUnlock(); // si este intento no cuaja, lo reintenta el próximo gesto
+  const p = audio.ctx.resume();
+  if (p && p.catch) p.catch(() => { /* hará falta otro gesto */ });
+}
+// entrar en cabina, por el menú o por la red: desde aquí sí queremos música
+function enterAudio() {
+  audioWanted = true;
+  resumeAudio();
+  if (!audio) return;
+  if (audio.musicTrackBuf) startUserMusic();   // ya descargada mientras elegías nave
+  else if (musicFailed) startMusic();
+}
+armAudioUnlock(); // el primer toque en cualquier sitio ya crea el contexto y precarga
+
 function initAudio() {
   if (audio || !AC) return;
+  // iOS: sin declarar la sesión como reproducción, el interruptor de silencio
+  // del iPhone deja el juego entero mudo (Safari 16.4+)
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* no soportado */ }
   const ctx = new AC();
+  // Limitador de salida. Los samples vienen flojos —la música pica a −12 dBFS y
+  // se queda en −28 de RMS—, así que con el master a 0.45 la batalla salía a
+  // −37 dBFS: en el altavoz de un móvil, eso es no oír nada. Ahora el master
+  // sube al doble y es el limitador el que sujeta los picos, que con 184
+  // tiradores y capitales reventando se solapan de sobra.
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -6;
+  limiter.knee.value = 4;
+  limiter.ratio.value = 8;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.25;
+  limiter.connect(ctx.destination);
   const master = ctx.createGain();
-  master.gain.value = 0.45;
-  master.connect(ctx.destination);
+  master.gain.value = 0.9;
+  master.connect(limiter);
   const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
   const nd = noiseBuf.getChannelData(0);
   for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
   // motor: ruido en banda que sigue al acelerador
-  const engineSrc = ctx.createBufferSource();
-  engineSrc.buffer = noiseBuf;
-  engineSrc.loop = true;
   const engineFilter = ctx.createBiquadFilter();
   engineFilter.type = 'bandpass';
   engineFilter.frequency.value = 110;
   engineFilter.Q.value = 1.1;
   const engineGain = ctx.createGain();
   engineGain.gain.value = 0;
-  engineSrc.connect(engineFilter).connect(engineGain).connect(master);
-  engineSrc.start();
+  engineFilter.connect(engineGain).connect(master);
   audio = {
-    ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2,
+    ctx, master, engineGain, engineFilter, noiseBuf, laserBudget: 2, engineSrc: null,
     music: null, musicTrack: null, laserBuf: null, explodeBuf: null, shieldBuf: null, musicTrackBuf: null,
+  };
+  startEngineDrone();
+  // el navegador para y reanuda el contexto por su cuenta: aquí nos enteramos
+  ctx.onstatechange = () => {
+    if (ctx.state === 'interrupted') audioInterrupted = true; // Safari: llamada, bloqueo de pantalla…
+    if (ctx.state === 'running') {
+      disarmAudioUnlock();
+      if (audioInterrupted) { audioInterrupted = false; restartAudioLoops(); }
+    } else if (audioWanted) armAudioUnlock();
   };
   // samples del usuario; si alguno falla, queda el respaldo sintetizado
   const loadSample = (url, key, onOk, onFail) => fetch(url)
@@ -685,29 +766,75 @@ function initAudio() {
   loadSample('./assets/shield-down.mp3', 'shieldBuf');
   loadSample('./assets/flyby.mp3', 'flybyBuf');
   loadSample('./assets/battle-music.mp3', 'musicTrackBuf',
-    () => startUserMusic(),  // la pista del usuario, en bucle perfecto
-    () => startMusic());     // sin pista: banda sonora generativa de respaldo
+    () => { if (audioWanted) startUserMusic(); },                 // la pista del usuario, en bucle perfecto
+    () => { musicFailed = true; if (audioWanted) startMusic(); }); // sin pista: banda sonora generativa
+}
+
+// El drone del motor es una fuente en bucle, y una interrupción del sistema la
+// mata para siempre: por eso se monta aparte, para poder rehacerla.
+function startEngineDrone() {
+  if (!audio) return;
+  const { ctx, noiseBuf, engineFilter } = audio;
+  if (audio.engineSrc) {
+    audio.engineSrc.onended = null; // la vieja no debe disparar el relevo
+    try { audio.engineSrc.stop(); } catch { /* ya estaba parada */ }
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf;
+  src.loop = true;
+  src.connect(engineFilter);
+  src.start();
+  // un bucle no termina solo: si termina con el contexto sonando, lo mataron
+  src.onended = () => {
+    if (audio && audio.engineSrc === src && audio.ctx.state === 'running') startEngineDrone();
+  };
+  audio.engineSrc = src;
+}
+
+// tras una interrupción el contexto vuelve, pero motor y música siguen mudos:
+// las fuentes en bucle no se reanudan, se reconstruyen
+function restartAudioLoops() {
+  if (!audio) return;
+  startEngineDrone();
+  if (audio.musicTrack) {
+    audio.musicTrack.src.onended = null;
+    try { audio.musicTrack.src.stop(); } catch { /* ya estaba parada */ }
+    audio.musicTrack = null;
+  }
+  if (audio.music) {
+    for (const o of audio.music.drones) { try { o.stop(); } catch { /* ya estaba parada */ } }
+    audio.music = null;
+  }
+  if (!audioWanted) return;
+  if (audio.musicTrackBuf) startUserMusic();
+  else if (musicFailed) startMusic();
 }
 
 // música del usuario en bucle sin costuras para toda la partida
 function startUserMusic() {
-  if (!audio || audio.musicTrack) return;
+  if (!audio || audio.musicTrack || !audio.musicTrackBuf) return;
   const { ctx, master } = audio;
   const gain = ctx.createGain();
-  gain.gain.value = 0.75; // bien presente ("no se escucha" a 0.42); los efectos siguen encima
+  // la pista pica a −12 dBFS, así que aguanta este empujón sin acercarse al techo
+  gain.gain.value = 1.45; // bien presente ("no se escucha" a 0.42 ni a 0.75)
   gain.connect(master);
   const src = ctx.createBufferSource();
   src.buffer = audio.musicTrackBuf;
   src.loop = true;
   src.connect(gain);
   src.start();
+  src.onended = () => { // igual que el motor: un bucle que acaba es un bucle muerto
+    if (!audio || !audio.musicTrack || audio.musicTrack.src !== src) return;
+    audio.musicTrack = null;
+    if (audioWanted && audio.ctx.state === 'running') startUserMusic();
+  };
   audio.musicTrack = { src, gain };
 }
 
 // whoosh de pasada cercana: una nave cruza rozándote a velocidad
 let flybyCool = 0;
 function sfxFlyby(vol) {
-  if (sfxMuted || !audio || !audio.flybyBuf) return;
+  if (sfxOff() || !audio.flybyBuf) return;
   const { ctx, master } = audio;
   const src = ctx.createBufferSource();
   src.buffer = audio.flybyBuf;
@@ -736,7 +863,7 @@ function checkFlybys(dt) {
 
 // alarma al romperse el escudo del jugador
 function sfxShieldDown() {
-  if (sfxMuted || !audio || !audio.shieldBuf) return;
+  if (sfxOff() || !audio.shieldBuf) return;
   const { ctx, master } = audio;
   const src = ctx.createBufferSource();
   src.buffer = audio.shieldBuf;
@@ -750,7 +877,7 @@ function gainFor(pos, range) {
   return d >= range ? 0 : 1 - d / range;
 }
 function sfxLaser(vol) {
-  if (sfxMuted || !audio || vol <= 0) return;
+  if (sfxOff() || vol <= 0) return;
   if (audio.laserBudget < 1) return;
   audio.laserBudget -= 1;
   const { ctx, master, noiseBuf } = audio;
@@ -900,7 +1027,7 @@ function scheduleMusicBar(t, bar) {
   }
 }
 function sfxExplosion(size, vol) {
-  if (sfxMuted || !audio || vol <= 0) return;
+  if (sfxOff() || vol <= 0) return;
   const { ctx, master, noiseBuf } = audio;
   const t = ctx.currentTime;
   // sample del usuario para naves destruidas: cuanto mayor la nave, más grave.
@@ -944,7 +1071,7 @@ function sfxExplosion(size, vol) {
   }
 }
 function sfxMissile() {
-  if (sfxMuted || !audio) return;
+  if (sfxOff()) return;
   const { ctx, master, noiseBuf } = audio;
   const t = ctx.currentTime;
   const src = ctx.createBufferSource();
@@ -962,7 +1089,7 @@ function sfxMissile() {
   src.stop(t + 0.6);
 }
 function sfxLock() {
-  if (sfxMuted || !audio) return;
+  if (sfxOff()) return;
   const { ctx, master } = audio;
   for (let i = 0; i < 2; i++) {
     const t = ctx.currentTime + i * 0.09;
@@ -978,7 +1105,7 @@ function sfxLock() {
   }
 }
 function sfxHit() {
-  if (sfxMuted || !audio) return;
+  if (sfxOff()) return;
   const { ctx, master } = audio;
   const t = ctx.currentTime;
   const o = ctx.createOscillator();
@@ -2007,8 +2134,9 @@ function beginMultiplayer() {
   // separar las salidas para que no aparezcan unos dentro de otros
   const idx = [...net.players.keys()].indexOf(net.self);
   ship.position.set(-80 + idx * 55, 60 + (idx % 3) * 30, -650 - (idx % 2) * 40);
-  initAudio();
-  if (audio && audio.ctx.state === 'suspended') audio.ctx.resume();
+  // ojo: al invitado le llega por la red, sin gesto suyo, así que el contexto
+  // puede nacer suspendido — enterAudio() deja armado el desbloqueo al primer toque
+  enterAudio();
   lockLandscape();
   lockPointer();
   started = true;
@@ -2234,7 +2362,9 @@ window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMis
   get shipBody() { return shipBody; },
   set snapSeq(v) { snapSeq = v; }, get snapSeq() { return snapSeq; },
   set mpActive(v) { mpActive = v; }, get mpActive() { return mpActive; }, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
-  get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
+  get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; },
+  // por qué no se oye nada, de un vistazo desde la consola
+  get audioState() { return { state: audio && audio.ctx.state, wanted: audioWanted, blocked: audioBlocked, unlockArmed, musicFailed, music: !!(audio && (audio.musicTrack || audio.music)) }; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -2495,6 +2625,19 @@ function update(dt) {
   const t = clockTime;
   refreshColliders();
   if (audio) {
+    // El navegador puede negarse a sonar (autoplay, interrupción del sistema):
+    // decirlo, que si no el juego parece roto y no hay manera de adivinarlo. Se
+    // mide en reloj de pared y no en dt: con la batalla a tirones, dt va lento y
+    // el aviso llegaría tarde justo cuando más falta hace.
+    if (audio.ctx.state === 'running' || document.hidden || !audioWanted) {
+      audioBlockT = 0;
+      audioBlocked = false;
+    } else if (!audioBlockT) {
+      audioBlockT = performance.now();
+    } else if (!audioBlocked && performance.now() - audioBlockT > 1500) { // margen: reanudar tarda
+      audioBlocked = true;
+      message(isTouch ? 'TAP THE SCREEN TO ENABLE SOUND' : 'CLICK TO ENABLE SOUND');
+    }
     audio.laserBudget = Math.min(3, audio.laserBudget + dt * 9); // máx ~9 láseres audibles/s
     if (player.dead) audio.engineGain.gain.setTargetAtTime(0, audio.ctx.currentTime, 0.3);
     // música: planificar compases con antelación (compás de 2.5 s, ~96 BPM)
