@@ -10,7 +10,7 @@ import {
 import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { net, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
+import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
@@ -1814,6 +1814,47 @@ function wireLobby() {
   const nameOf = () => (el('nameBox').value || 'PILOT').toUpperCase().slice(0, 12);
   net.onLobby = lobbyRefresh;
   net.onMessage = onNetMessage;
+  diag.onLog = () => { const b = el('netLog'); b.textContent = diag.log.join('\n'); b.scrollTop = b.scrollHeight; };
+
+  /* Prueba de conexión: dice si el problema es tu red o la sala.
+     1) ¿funciona WebRTC en este navegador? (bucle local)
+     2) ¿se alcanzan los servidores STUN/TURN? (qué candidatos aparecen) */
+  el('diagBtn').onclick = async () => {
+    diag.log.length = 0;
+    const say = (m) => { diag.log.push(m); diag.onLog(); };
+    say('— prueba de conexión —');
+    try {
+      const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+      a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
+      b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
+      const dc = a.createDataChannel('t');
+      const ok = new Promise((res) => { dc.onopen = () => res(true); setTimeout(() => res(false), 6000); });
+      await a.setLocalDescription(await a.createOffer());
+      await b.setRemoteDescription(a.localDescription);
+      await b.setLocalDescription(await b.createAnswer());
+      await a.setRemoteDescription(b.localDescription);
+      say(await ok ? '1) WebRTC funciona en este navegador ✓'
+        : '1) WebRTC BLOQUEADO en este navegador/red ✗ (extensión, VPN o política del equipo)');
+      a.close(); b.close();
+    } catch (e) { say('1) WebRTC no disponible: ' + e); }
+    // 2) candidatos: 'srflx' = STUN alcanzable, 'relay' = TURN alcanzable
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ] });
+      const kinds = new Set();
+      pc.onicecandidate = (e) => { if (e.candidate) kinds.add(e.candidate.type); };
+      pc.createDataChannel('x');
+      await pc.setLocalDescription(await pc.createOffer());
+      await new Promise((res) => setTimeout(res, 6000));
+      pc.close();
+      say(`2) candidatos obtenidos: ${[...kinds].join(', ') || 'ninguno'}`);
+      say(kinds.has('relay') ? '   TURN alcanzable ✓ (debería conectar aunque haya NAT estricta)'
+        : kinds.has('srflx') ? '   STUN sí, TURN no ✗ — con NAT estricta fallará'
+          : '   sin salida a STUN/TURN ✗ — red muy restringida');
+    } catch (e) { say('2) fallo al sondear: ' + e); }
+  };
   net.onStart = () => beginMultiplayer();
   net.onLeave = (id) => { removeRemotePilot(id); drawScore(); };
   net.onError = (msg) => { el('lobbyStatus').textContent = msg; };
@@ -1824,6 +1865,7 @@ function wireLobby() {
       const id = await hostGame(nameOf());
       const url = `${location.origin}${location.pathname}?room=${id}`;
       el('linkBox').value = url;
+      el('lobbyHint').textContent = 'Share this link. Keep THIS tab open — you are the host.';
       lobbyRefresh();
     } catch { el('lobbyStatus').textContent = 'Could not open the room'; }
   };

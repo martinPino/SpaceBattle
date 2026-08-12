@@ -31,18 +31,57 @@ export const net = {
 
 let peer = null;
 
+/* Sin TURN, dos navegadores tras NAT simétrica (o tras el cortafuegos de una
+   oficina) no llegan a verse aunque la señalización funcione: es la causa
+   habitual de "no se pudo entrar en la sala". Los STUN solo descubren tu IP
+   pública; el TURN retransmite cuando el camino directo es imposible, y por
+   el 443 en TCP atraviesa casi cualquier red corporativa.
+   Son servidores públicos gratuitos (openrelay), suficientes para partidas
+   entre amigos; si algún día hace falta fiabilidad, se cambian por unos propios. */
+// El 443 de openrelay ya no responde (comprobado); solo queda vivo el 80, en
+// UDP y en TCP. Si algún día quieres conexiones fiables tras NAT estricta,
+// pon aquí un TURN propio: es la única pieza que el P2P no puede evitar.
+const ICE = {
+  iceServers: [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ],
+  iceCandidatePoolSize: 4,
+};
+
+export const diag = { log: [], onLog: () => {} };
+function note(msg) {
+  diag.log.push(msg);
+  if (diag.log.length > 40) diag.log.shift();
+  diag.onLog(msg);
+}
+
 function newPeer() {
   return new Promise((resolve, reject) => {
     // servidor público de señalización de PeerJS: solo intercambia la
     // "presentación" entre navegadores; el juego viaja directo entre ellos
-    const p = new Peer({ debug: 1 });
-    p.on('open', (id) => resolve([p, id]));
+    note('abriendo canal de señalización…');
+    const p = new Peer({ debug: 1, config: ICE });
+    const to = setTimeout(() => { note('señalización: sin respuesta en 15 s'); reject(new Error('signal-timeout')); }, 15000);
+    p.on('open', (id) => { clearTimeout(to); note('señalización lista'); resolve([p, id]); });
+    p.on('disconnected', () => { note('señalización caída; reconectando…'); try { p.reconnect(); } catch { /* ya destruido */ } });
     p.on('error', (e) => {
+      note(`error de par: ${e.type}`);
       // 'peer-unavailable' = sala inexistente; el resto suelen ser de red
-      net.onError(e.type === 'peer-unavailable' ? 'Sala no encontrada' : `Red: ${e.type}`);
+      net.onError(e.type === 'peer-unavailable' ? 'Room not found — check the code' : `Network: ${e.type}`);
+      clearTimeout(to);
       reject(e);
     });
   });
+}
+
+// deja rastro de por dónde va la negociación ICE: es donde falla el 99% de las veces
+function watchIce(conn) {
+  const pc = conn.peerConnection;
+  if (!pc) return;
+  pc.oniceconnectionstatechange = () => note(`ICE: ${pc.iceConnectionState}`);
+  pc.onicegatheringstatechange = () => note(`candidatos: ${pc.iceGatheringState}`);
 }
 
 /* ------------------------------- anfitrión ------------------------------- */
@@ -55,7 +94,10 @@ export async function hostGame(name) {
   net.id = id;
   net.players.set(id, { id, name, ready: true, kills: 0, deaths: 0 });
   p.on('connection', (conn) => {
+    note('entrante: negociando…');
+    watchIce(conn);
     conn.on('open', () => {
+      note('entrante: conectado');
       if (net.started || net.players.size >= 8) { conn.close(); return; }
       net.peers.set(conn.peer, conn);
     });
@@ -114,13 +156,25 @@ export async function joinGame(hostId, name) {
   net.role = 'guest';
   net.self = id;
   net.id = hostId;
-  const conn = p.connect(hostId, { reliable: true });
+  // un intento directo y, si no cuaja, otro: la primera negociación ICE puede
+  // perderse mientras el TURN todavía está reuniendo candidatos
+  let conn = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    note(`conectando con el anfitrión (intento ${attempt})…`);
+    conn = p.connect(hostId, { reliable: true });
+    watchIce(conn);
+    const ok = await new Promise((resolve) => {
+      const to = setTimeout(() => resolve(false), 25000); // TURN puede tardar
+      conn.on('open', () => { clearTimeout(to); resolve(true); });
+      conn.on('error', (e) => { note(`error de conexión: ${e.type || e}`); clearTimeout(to); resolve(false); });
+    });
+    if (ok) break;
+    try { conn.close(); } catch { /* ya cerrada */ }
+    conn = null;
+  }
+  if (!conn) { note('no se pudo abrir el canal de datos'); throw new Error('connect-failed'); }
+  note('¡conectado!');
   net.hostConn = conn;
-  await new Promise((resolve, reject) => {
-    const to = setTimeout(() => reject(new Error('timeout')), 12000);
-    conn.on('open', () => { clearTimeout(to); resolve(); });
-    conn.on('error', (e) => { clearTimeout(to); reject(e); });
-  });
   conn.on('data', (d) => {
     if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) { net.onMessage(hostId, d); return; }
     if (d.t === 'lobby') {
