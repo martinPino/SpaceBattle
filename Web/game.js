@@ -780,6 +780,7 @@ const playerEntity = {
    Docenas de cazas librando dogfights ambientales. Usan el MISMO caza del kit
    pero aligerado (fuera los detalles pequeños) para sostener el framerate. */
 const SWARM_PER_SIDE = 92; // 100 por bando contando al jugador, héroes y élite
+const ENEMY_SWARM_MAX = 368; // capacidad para el DOBLADO por oleadas (92·4, tope oleada 3+)
 const SWARM_DETAIL_CUT = /PanelLine|Vent|Conduit|Thruster|NavLight|Collar|HUD|AccentStrip|_Ring_|LeadingEdge|Hardpoint|CoreHalo|Fin_|SensorPod|TipPylon|Breech|Frame|Intake/;
 
 function makeSwarmTemplate(faction) {
@@ -819,17 +820,19 @@ function bakeSwarmGeometry(template) {
   };
 }
 function makeSwarmBatch(faction) {
+  // el bando enemigo reserva capacidad ×4: las oleadas doblan sus filas
+  const capacity = faction === 'ally' ? SWARM_PER_SIDE : ENEMY_SWARM_MAX;
   const baked = bakeSwarmGeometry(makeSwarmTemplate(faction));
   const hull = new THREE.InstancedMesh(baked.hull, new THREE.MeshStandardMaterial({
     vertexColors: true, metalness: 0.25, roughness: 0.55, envMapIntensity: 1.0,
     // rescoldo por bando: el enjambre se lee contra el vacío igual que los héroes
     emissive: faction === 'ally' ? 0x16303c : 0x3c1a14, emissiveIntensity: 0.5,
-  }), SWARM_PER_SIDE);
+  }), capacity);
   hull.frustumCulled = false; // las instancias cubren toda la batalla: sin culling por lote
   scene.add(hull);
   let glow = null;
   if (baked.glow) {
-    glow = new THREE.InstancedMesh(baked.glow, new THREE.MeshBasicMaterial({ vertexColors: true }), SWARM_PER_SIDE);
+    glow = new THREE.InstancedMesh(baked.glow, new THREE.MeshBasicMaterial({ vertexColors: true }), capacity);
     glow.frustumCulled = false;
     scene.add(glow);
   }
@@ -852,8 +855,10 @@ function resetSwarmShip(s, immediate) {
   s.retarget = Math.random() * 2;
   s.nextShot = 2 + Math.random() * 3;
 }
+let enabledEnemySwarm = SWARM_PER_SIDE; // slots enemigos activos esta oleada
 for (const faction of ['ally', 'enemy']) {
-  for (let i = 0; i < SWARM_PER_SIDE; i++) {
+  const count = faction === 'ally' ? SWARM_PER_SIDE : ENEMY_SWARM_MAX;
+  for (let i = 0; i < count; i++) {
     const s = {
       obj: new THREE.Object3D(), faction, slot: i,
       vel: new THREE.Vector3(), hp: 3, alive: true, target: null,
@@ -863,6 +868,7 @@ for (const faction of ['ally', 'enemy']) {
       weaveAmp: 0.35 + Math.random() * 0.45,
     };
     resetSwarmShip(s, true);
+    if (faction === 'enemy' && i >= enabledEnemySwarm) s.alive = false; // reserva de oleadas futuras
     swarm.push(s);
   }
 }
@@ -920,12 +926,23 @@ function damageFighter(f, dmg, atPos) {
   }
 }
 
-// la misión: aniquilar la flota enemiga COMPLETA (élite + enjambre = 100 naves)
-const TOTAL_ENEMY_SHIPS = ENEMY_TOTAL + SWARM_PER_SIDE;
+// la misión: aniquilar la flota enemiga COMPLETA de la oleada (cada oleada DOBLA sus filas)
+let waveEnemyTotal = ENEMY_TOTAL + SWARM_PER_SIDE; // oleada 1: 100
 function registerEnemyKill() {
   kills++;
   hud.kills.textContent = kills;
-  if (kills >= TOTAL_ENEMY_SHIPS) endGame(true);
+  if (kills >= waveEnemyTotal) endGame(true);
+}
+
+// el misil pega MUCHO más que el láser: un caza, del impacto; la capital, 150 al casco
+function missileHit(target, pos) {
+  if (target.isCapital) return; // el golpe al casco lo resuelven sus esferas de colisión
+  if (target.slot !== undefined) {
+    target.hp = 0;
+    killSwarmShip(target, true);
+  } else {
+    damageFighter(target, 6, pos);
+  }
 }
 
 /* -------------------- OLEADAS: la guerra no termina, se recrudece --------------------
@@ -965,8 +982,24 @@ function startNextWave() {
   kills = 0;
   hud.kills.textContent = 0;
   clearProjectiles();
+  // EL DOBLE de enemigos por oleada (tope ×4 en la 3+): enjambre y élite
+  const mult = Math.min(Math.pow(2, wave - 1), 4);
+  enabledEnemySwarm = Math.min(SWARM_PER_SIDE * mult, ENEMY_SWARM_MAX);
+  const eliteTarget = Math.min(ENEMY_TOTAL * mult, 32);
+  let enemyElites = fighters.filter((f) => f.faction === 'enemy').length;
+  while (enemyElites < eliteTarget) { spawnFighter('enemy', enemyElites, eliteTarget); enemyElites++; }
+  waveEnemyTotal = enabledEnemySwarm + eliteTarget;
+  el('killTotal').textContent = waveEnemyTotal;
   for (const f of fighters) if (!f.alive) reviveFighter(f);
-  for (const s of swarm) if (!s.alive) resetSwarmShip(s, true);
+  let enemyIdx = 0;
+  for (const s of swarm) {
+    if (s.faction === 'ally') {
+      if (!s.alive) resetSwarmShip(s, true);
+    } else {
+      if (enemyIdx < enabledEnemySwarm && !s.alive) resetSwarmShip(s, true);
+      enemyIdx++;
+    }
+  }
   player.shield = 100;
   player.hull = 100;
   player.dead = false;
@@ -978,38 +1011,71 @@ function startNextWave() {
   message(`WAVE ${wave} — ENEMY REINFORCEMENTS INBOUND`);
 }
 
-/* -------------------- misiles guiados (click derecho) -------------------- */
+/* -------------------- misiles guiados (click derecho) --------------------
+   FIJACIÓN POR CARGA: mantén la mira sobre un enemigo ~1 s para fijarlo
+   (anillo de progreso en la mira); solo con fijación completa sale el misil,
+   y entonces SÍ persigue. Sin fijación, el disparador avisa y no gasta. */
 const missiles = [];
 let missileAmmo = 8, missileCooldown = 0;
+let lockTarget = null, lockProgress = 0, lockGrace = 0, lockAnnounced = false;
+const enemyCapEntity = { obj: enemyCapital, isCapital: true, get alive() { return capitals.enemy.alive; } };
+const LOCK_TIME = 1.05;
+
+function lockCandidateOk(e, coneDeg, maxDist) {
+  tv1.copy(e.obj.position).sub(ship.position);
+  const d = tv1.length();
+  if (d > maxDist) return false;
+  fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
+  return tv1.normalize().dot(fwd) > Math.cos(THREE.MathUtils.degToRad(coneDeg));
+}
+function updateLock(dt) {
+  if (player.dead || !started) { lockTarget = null; lockProgress = 0; lockAnnounced = false; return; }
+  // el objetivo actual conserva la fijación mientras siga en el cono (con gracia corta)
+  if (lockTarget && lockTarget.alive
+      && lockCandidateOk(lockTarget, lockTarget.isCapital ? 18 : 14, lockTarget.isCapital ? 3200 : 1600)) {
+    lockGrace = 0.45;
+    if (lockProgress < 1) {
+      lockProgress = Math.min(1, lockProgress + dt / LOCK_TIME);
+      if (lockProgress >= 1 && !lockAnnounced) { lockAnnounced = true; sfxLock(); message('TARGET LOCKED — FIRE MISSILE'); }
+    }
+    return;
+  }
+  if (lockTarget) {
+    lockGrace -= dt;
+    if (lockGrace > 0 && lockTarget.alive) return; // gracia: un quiebro no borra la fijación
+    lockTarget = null; lockProgress = 0; lockAnnounced = false;
+  }
+  // nuevo candidato: el enemigo más alineado con la mira
+  fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
+  let best = null, bestDot = Math.cos(THREE.MathUtils.degToRad(14));
+  const consider = (e, maxDist) => {
+    tv1.copy(e.obj.position).sub(ship.position);
+    const d = tv1.length();
+    if (d > maxDist) return;
+    const dot = tv1.normalize().dot(fwd);
+    if (dot > bestDot) { bestDot = dot; best = e; }
+  };
+  for (const f of fighters) if (f.alive && f.faction === 'enemy') consider(f, 1600);
+  for (const s of swarm) if (s.alive && s.faction === 'enemy') consider(s, 1600);
+  if (!best && capitals.enemy.alive && lockCandidateOk(enemyCapEntity, 18, 3200)) best = enemyCapEntity;
+  if (best) { lockTarget = best; lockProgress = dt / LOCK_TIME; lockGrace = 0.45; lockAnnounced = false; }
+}
 const missileGeo = new THREE.BoxGeometry(0.3, 0.3, 2.2);
 const missileMat = new THREE.MeshBasicMaterial({ color: 0xfff2c8 });
 const missileFlameTex = radialGlow([1.0, 0.75, 0.4], 0.32);
 
 function launchMissile() {
   if (!started || player.dead || missileAmmo <= 0 || missileCooldown > 0) return;
+  // sin fijación completa no hay misil: apunta y deja que la mira cargue
+  if (!(lockTarget && lockTarget.alive && lockProgress >= 1)) {
+    message('NO LOCK — HOLD AIM ON TARGET');
+    return;
+  }
+  const target = lockTarget;
   missileCooldown = 1.1;
   missileAmmo--;
   if (hud.missiles) hud.missiles.textContent = missileAmmo;
-
-  // fijación: enemigo vivo más alineado con la mira (cono ~25°, hasta 700 m)
   fwd.set(0, 0, 1).applyQuaternion(ship.quaternion);
-  let target = null, bestDot = Math.cos(THREE.MathUtils.degToRad(25));
-  for (const f of fighters) {
-    if (!f.alive || f.faction !== 'enemy') continue;
-    tmp.copy(f.obj.position).sub(ship.position);
-    const dist = tmp.length();
-    if (dist > 700) continue;
-    const dot = tmp.normalize().dot(fwd);
-    if (dot > bestDot) { bestDot = dot; target = f; }
-  }
-  // sin caza a tiro: fijación sobre la capital enemiga si la tienes de frente
-  if (!target && capitals.enemy.alive) {
-    tmp.copy(capitals.enemy.group.position).sub(ship.position);
-    if (tmp.length() < 3000 && tmp.normalize().dot(fwd) > Math.cos(THREE.MathUtils.degToRad(20))) {
-      const cap = capitals.enemy;
-      target = { obj: cap.group, isCapital: true, get alive() { return cap.alive; } };
-    }
-  }
 
   const m = new THREE.Mesh(missileGeo, missileMat);
   m.position.copy(ship.position).addScaledVector(fwd, 8).add(tmp.set(0, -1.2, 0).applyQuaternion(ship.quaternion));
@@ -1027,9 +1093,8 @@ function launchMissile() {
     vel: fwd.clone().multiplyScalar(Math.max(90, player.vel.length() + 50)),
     life: 9,
   });
-  message(target ? 'MISSILE: TARGET LOCKED' : 'MISSILE: NO LOCK');
+  message('MISSILE AWAY');
   sfxMissile();
-  if (target) sfxLock();
 }
 
 /* -------------------- cañones de las capitales -------------------- */
@@ -1168,13 +1233,13 @@ const hud = {
   shield: el('shieldBar').firstElementChild, hull: el('hullBar').firstElementChild,
   msg: el('msg'), allies: el('allyCount'), missiles: el('missileCount'),
 };
-el('killTotal').textContent = TOTAL_ENEMY_SHIPS;
+el('killTotal').textContent = waveEnemyTotal;
 capitals.ally.bar = el('allyCapBar').firstElementChild;
 capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, player, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; } };
+window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, fighters, swarm, ship, touchStick, player, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1264,6 +1329,34 @@ function drawMarkers() {
   for (const f of fighters) if (f.alive && f.faction === 'enemy') mark(f.obj.position, false);
   for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false);
   if (capitals.enemy.alive) mark(capitals.enemy.group.position, true);
+
+  /* fijación de misil: anillo de carga en la mira + rombo sobre el objetivo */
+  if (lockTarget) {
+    const locked = lockProgress >= 1;
+    const cx = markC.width / 2, cy = markC.height / 2;
+    mctx.lineWidth = 2.5;
+    mctx.strokeStyle = locked ? 'rgba(255,70,50,0.95)' : 'rgba(255,200,90,0.9)';
+    mctx.beginPath();
+    mctx.arc(cx, cy, 30, -Math.PI / 2, -Math.PI / 2 + lockProgress * Math.PI * 2);
+    mctx.stroke();
+    tmp.copy(lockTarget.obj.position).project(camera);
+    if (tmp.z < 1) {
+      const sx = (tmp.x + 1) / 2 * markC.width;
+      const sy = (1 - tmp.y) / 2 * markC.height;
+      const r = locked ? 15 : 10;
+      mctx.beginPath();
+      mctx.moveTo(sx, sy - r); mctx.lineTo(sx + r, sy);
+      mctx.lineTo(sx, sy + r); mctx.lineTo(sx - r, sy);
+      mctx.closePath();
+      mctx.stroke();
+    }
+    if (locked) {
+      mctx.font = '10px monospace';
+      mctx.fillStyle = 'rgba(255,90,60,0.9)';
+      mctx.textAlign = 'center';
+      mctx.fillText('LOCKED', cx, cy + 48);
+    }
+  }
 }
 
 /* flecha en pantalla hacia el enemigo más cercano (para cazar a los últimos) */
@@ -1323,8 +1416,9 @@ function endGame(victory) {
   }
   el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
-    ? `Wave ${wave} cleared — all ${TOTAL_ENEMY_SHIPS} enemy ships destroyed.<br>`
+    ? `Wave ${wave} cleared — all ${waveEnemyTotal} enemy ships destroyed.<br>`
       + (capitals.enemy.alive ? 'The enemy capital withdraws… for now.' : 'Their capital is drifting wreckage.')
+      + '<br>Next wave: TWICE the enemies.'
     : 'Your hull gave out. Space is unforgiving.';
   el('nextWaveBtn').classList.toggle('hidden', !victory);
   const show = () => el('end').classList.remove('hidden');
@@ -1567,6 +1661,7 @@ function update(dt) {
     }
 
     checkFlybys(dt);
+    updateLock(dt);
 
     /* cañones: flak antifighter + andanadas capital contra capital */
     turretTick(capitals.ally, dt);
@@ -1668,7 +1763,7 @@ function update(dt) {
       // persecución con giro limitado: alcanzable, pero esquivable
       tmp.copy(ms.target.obj.position).sub(ms.mesh.position).normalize();
       const speed = Math.min(240, ms.vel.length() + 130 * dt); // más rápido que tu turbo: no te adelantas a tu propio misil
-      ms.vel.lerp(tmp.multiplyScalar(speed), 1 - Math.exp(-2.6 * dt));
+      ms.vel.lerp(tmp.multiplyScalar(speed), 1 - Math.exp(-3.2 * dt)); // giro firme: alcanza incluso a un caza serpenteando
       ms.mesh.quaternion.setFromUnitVectors(tmp.set(0, 0, 1), tmp2.copy(ms.vel).normalize());
     }
     ms.mesh.position.addScaledVector(ms.vel, dt);
@@ -1676,8 +1771,8 @@ function update(dt) {
     let done = ms.life <= 0;
 
     if (!done && hasTarget && !ms.target.isCapital
-        && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 12 * 12) {
-      damageFighter(ms.target, 3, ms.mesh.position); // un misil, una baja
+        && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 14 * 14) {
+      missileHit(ms.target, ms.mesh.position); // un misil, una baja — élite o enjambre
       flash(ms.mesh.position, true, 14, 0.35);
       sfxExplosion(1.6, gainFor(ms.mesh.position, 1600));
       done = true;
