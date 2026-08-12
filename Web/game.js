@@ -188,21 +188,51 @@ const capitals = {
   enemy: { group: enemyCapital, faction: 'enemy', hp: 2600, maxHp: 2600, alive: true, dying: 0, burnT: 0, turrets: [], bar: null },
 };
 
-// los cascos de las capitales bloquean: 5 esferas que siguen el afilado del casco
+// los cascos de las capitales bloquean: esferas que siguen la forma del casco
 // (las puntas estrechas — nada de parachoques fantasma delante de la proa)
-for (const cap of [capitals.ally, capitals.enemy]) {
-  for (const [off, r] of [[-1000, 150], [-500, 260], [0, 300], [500, 260], [1000, 150]]) {
+const HULL_SPHERES_KIT = [[0, 0, -1000, 150], [0, 0, -500, 260], [0, 0, 0, 300], [0, 0, 500, 260], [0, 0, 1000, 150]];
+// arco imperial: 12 esferas derivadas de su geometría real (93% de cobertura)
+const HULL_SPHERES_ORB = [
+  [-680, 13, -29, 590], [-242, 2, -131, 413], [-110, 50, -390, 588], [133, 39, -426, 589],
+  [244, 2, -132, 412], [676, 12, -28, 593], [649, 12, 285, 606], [375, 4, 497, 612],
+  [132, 30, 630, 594], [-106, -11, 566, 655], [-374, 11, 497, 613], [-640, 12, 284, 594],
+];
+function buildCapitalColliders(cap, spheres) {
+  for (let i = colliders.length - 1; i >= 0; i--) {
+    if (colliders[i].cap === cap) { // fuera las del casco anterior
+      const old = colliders[i].obj;
+      if (old.parent) old.parent.remove(old);
+      colliders.splice(i, 1);
+    }
+  }
+  for (const [x, y, z, r] of spheres) {
     const proxy = new THREE.Object3D();
     cap.group.add(proxy);
-    proxy.position.set(0, 0, off);
+    proxy.position.set(x, y, z);
     addCollider(proxy, r, cap);
   }
 }
+buildCapitalColliders(capitals.ally, HULL_SPHERES_KIT);
+buildCapitalColliders(capitals.enemy, HULL_SPHERES_KIT);
 
-// torretas: usa los TurretSocket_* del kit y completa con soportes sintéticos
+// torretas: usa los TurretSocket_*/TurretGun_* del modelo y completa con soportes sintéticos
 function initTurrets(cap) {
   const marks = [];
-  cap.group.traverse((o) => { if (o.name && o.name.includes('TurretSocket')) marks.push(o); });
+  cap.group.updateMatrixWorld(true);
+  cap.group.traverse((o) => {
+    if (!o.name || !/TurretSocket|TurretGun/.test(o.name)) return;
+    if (!o.isMesh) { marks.push(o); return; } // marcadores vacíos del kit
+    // en un OBJ los vértices van en coordenadas absolutas y el objeto tiene
+    // transform identidad: la posición real está en el centro de su geometría
+    o.geometry.computeBoundingBox();
+    const c = o.geometry.boundingBox.getCenter(new THREE.Vector3());
+    o.localToWorld(c);
+    cap.group.worldToLocal(c);
+    const p = new THREE.Object3D();
+    p.position.copy(c);
+    cap.group.add(p);
+    marks.push(p);
+  });
   while (marks.length < 8) {
     const i = marks.length;
     const p = new THREE.Object3D();
@@ -214,6 +244,33 @@ function initTurrets(cap) {
 }
 initTurrets(capitals.ally);
 initTurrets(capitals.enemy);
+// extensión local del incendio previo a partirse (cada casco tiene su forma)
+capitals.ally.burnExtent = [240, 150, 2100];
+capitals.enemy.burnExtent = [240, 150, 2100];
+
+/* ---------- capital enemiga: acorazado imperial del usuario (arco de 2,6 km) ----------
+   Reemplaza el casco del kit en cuanto carga; si falla, el kit sigue en su sitio.
+   Guarda un molde para que cada oleada traiga una capital enemiga NUEVA. */
+let orbTemplate = null;
+function installOrbHull(cap) {
+  if (!orbTemplate) return false;
+  for (const child of [...cap.group.children]) cap.group.remove(child);
+  cap.group.add(orbTemplate.clone());
+  cap.group.scale.setScalar(1);
+  buildCapitalColliders(cap, HULL_SPHERES_ORB);
+  initTurrets(cap);
+  cap.burnExtent = [2400, 700, 1800]; // arco ancho: el incendio recorre las alas
+  return true;
+}
+new OBJLoader().load('./assets/SHIP_Capital_Imperial_Orb_01.obj', (obj) => {
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    const make = GUN_MAT_MAP[o.material && o.material.name];
+    if (make) o.material = make();
+  });
+  orbTemplate = obj;
+  installOrbHull(capitals.enemy);
+});
 // cache de posiciones de colliders (se refresca una vez por frame)
 function refreshColliders() {
   for (const c of colliders) c.obj.getWorldPosition(c.pos);
@@ -900,8 +957,9 @@ const GUN_DETAIL_CUT = /Greeble|PlateSeam|Vent_|Collar_|_Ring_|WarStripe|Leading
 // el OBJ nombra sus materiales como el kit: se remapean a la paleta real
 const GUN_MAT_MAP = {
   MAT_Hull_Dark: MAT.hull_dark, MAT_Hull_Mid: MAT.hull_mid, MAT_Hull_Black: MAT.hull_black,
-  MAT_Accent_Amber: MAT.accent, MAT_Cockpit_Glass: MAT.glass,
+  MAT_Hull_Light: MAT.hull_light, MAT_Accent_Amber: MAT.accent, MAT_Cockpit_Glass: MAT.glass,
   MAT_Emissive_Red: MAT.emis_red, MAT_Emissive_EngineCore: MAT.emis_white,
+  MAT_Emissive_EngineCore_Red: MAT.emis_red, MAT_Emissive_Aperture: MAT.emis_red,
 };
 function makeGunshipBatch(template) {
   const baked = bakeSwarmGeometry(template);
@@ -1104,6 +1162,24 @@ function clearProjectiles() {
   for (const l of lasers) { l.mesh.visible = false; laserPool.push(l.mesh); }
   lasers.length = 0;
 }
+/* cada oleada, el enemigo trae una capital NUEVA si perdió la anterior
+   (la tuya no se repone: perderla pesa para el resto de la partida) */
+function respawnEnemyCapital() {
+  const cap = capitals.enemy;
+  if (cap.alive) return;
+  if (!cap.group.parent) world.add(cap.group); // breakApart la había retirado
+  cap.hp = cap.maxHp;
+  cap.alive = true;
+  cap.dying = 0;
+  cap.burnT = 0;
+  if (cap.bar) cap.bar.style.width = '100%';
+  if (!installOrbHull(cap)) {
+    cap.group.add(buildCapitalShip({ length: 2600 }));
+    buildCapitalColliders(cap, HULL_SPHERES_KIT);
+    initTurrets(cap);
+  }
+  message('ENEMY FLAGSHIP ARRIVING');
+}
 function startNextWave() {
   wave++;
   enemySpread = Math.max(0.07, 0.14 - 0.02 * (wave - 1));
@@ -1124,6 +1200,7 @@ function startNextWave() {
     if (i < enabledGunships) { if (!gunships[i].alive) resetSwarmShip(gunships[i], true); }
     else gunships[i].alive = false;
   }
+  respawnEnemyCapital();
   for (const f of fighters) if (!f.alive) reviveFighter(f);
   let enemyIdx = 0;
   for (const s of swarm) {
@@ -1873,7 +1950,8 @@ function update(dt) {
     cap.burnT -= dt;
     if (cap.burnT <= 0) {
       cap.burnT = 0.12; // explosiones recorriendo el casco
-      tv1.set((Math.random() - 0.5) * 240, (Math.random() - 0.5) * 150, (Math.random() - 0.5) * 2100);
+      const bx = cap.burnExtent || [240, 150, 2100];
+      tv1.set((Math.random() - 0.5) * bx[0], (Math.random() - 0.5) * bx[1], (Math.random() - 0.5) * bx[2]);
       cap.group.localToWorld(tv1);
       flash(tv1, true, 18 + Math.random() * 40, 0.4);
       if (Math.random() < 0.35) sfxExplosion(1 + Math.random(), gainFor(tv1, 3200) * 0.8);
