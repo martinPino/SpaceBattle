@@ -364,13 +364,14 @@ const player = {
 const SHIPS = [
   { id: 'kit', name: 'INTERCEPTOR', tag: 'kit · all-rounder', file: null, yaw: 0, scale: 1 },
   { id: 'fighterjet', name: 'FIGHTER JET X', tag: 'sleek · atmospheric', file: './assets/ships/ship-fighterjet.glb', yaw: 0, scale: 1 },
-  // casi cuadrada (11,8 × 12), así que la heurística del eje largo no vale:
-  // el yaw sale de mirarla desde atrás — con −90 queda simétrica y de frente
-  { id: 'vanguard', name: 'OBSIDIAN VANGUARD', tag: 'heavy · armored', file: './assets/ships/ship-vanguard.glb', yaw: -90, scale: 1 },
+  // su morro también está en −X (66% más fino que la popa), igual que la KSS-X:
+  // las tres salen del mismo generador y comparten convención de ejes
+  { id: 'vanguard', name: 'OBSIDIAN VANGUARD', tag: 'heavy · armored', file: './assets/ships/ship-vanguard.glb', yaw: 90, scale: 1 },
   // eje largo en X tras el preproceso (12 de ancho por 8,4 de largo): volaba de
-  // costado. El signo del giro sale de mirarla desde atrás, no de la caja
-  // envolvente — deducirlo del bbox me dio el contrario
-  { id: 'mothership', name: 'KSS-X', tag: 'exotic · alien hull', file: './assets/ships/ship-mothership.glb', yaw: -90, scale: 1 },
+  // costado. El signo sale de medir el GROSOR de cada extremo: el morro es el
+  // fino (aquí −X, un 67% más estrecho). Mirarla "simétrica desde atrás" no
+  // sirve para el signo: lo es igual mirando al frente que hacia atrás
+  { id: 'mothership', name: 'KSS-X', tag: 'exotic · alien hull', file: './assets/ships/ship-mothership.glb', yaw: 90, scale: 1 },
 ];
 let currentShipId = 'kit';
 let shipBody = null;                 // cuerpo añadido (null = el del kit)
