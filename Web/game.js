@@ -1174,7 +1174,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; } };
+window.__sb = { capitals, damageCapital, fighters, swarm, ship, touchStick, player, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1311,15 +1311,25 @@ function damagePlayer(amount) {
 function endGame(victory) {
   if (player.dead) return;
   player.dead = true;
-  document.exitPointerLock();
+  // iOS/Safari móvil NO tiene Pointer Lock: llamarla a pelo rompía endGame
+  // entero (sin explosión y sin pantalla final — el bug reportado)
+  if (document.exitPointerLock) document.exitPointerLock();
   document.getElementById('start').classList.add('hidden');
+  if (!victory) {
+    // tu nave estalla de verdad: bola de fuego, sonido y el casco desaparece
+    flash(ship.position, true, 34, 0.8);
+    sfxExplosion(2.2, 1);
+    ship.visible = false;
+  }
   el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
     ? `Wave ${wave} cleared — all ${TOTAL_ENEMY_SHIPS} enemy ships destroyed.<br>`
       + (capitals.enemy.alive ? 'The enemy capital withdraws… for now.' : 'Their capital is drifting wreckage.')
     : 'Your hull gave out. Space is unforgiving.';
   el('nextWaveBtn').classList.toggle('hidden', !victory);
-  el('end').classList.remove('hidden');
+  const show = () => el('end').classList.remove('hidden');
+  if (victory) show();
+  else setTimeout(show, 1200); // un segundo para ver tu propia explosión
 }
 
 /* ============================== bucle ============================== */
