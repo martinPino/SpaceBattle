@@ -63,6 +63,48 @@ const nebula = buildNebula({ extent: 2600, puffs: 90 });
 nebula.position.set(-9000, 1500, -11000);
 world.add(nebula);
 
+/* --------- decorado profundo del usuario: nebulosa y galaxia espiral ---------
+   Son nubes de puntos (no mallas): se pintan como estrellas luminosas con
+   mezcla aditiva. Deben caber dentro del plano lejano de la cámara (30 km). */
+const starGlowTex = radialGlow([0.85, 0.92, 1.0], 0.22);        // estrella: núcleo pequeño
+const gasGlowTex = radialGlow([0.55, 0.78, 1.0], 0.3, true);    // gas: sin núcleo caliente
+function loadPointCloud(url, { position, rotation, scale = 1, size, color, tint, opacity = 1, gas = false }) {
+  new OBJLoader().load(url, (root) => {
+    root.traverse((o) => {
+      if (!o.isPoints) return;
+      const hasColor = !!o.geometry.getAttribute('color');
+      o.material = new THREE.PointsMaterial({
+        map: gas ? gasGlowTex : starGlowTex, size, sizeAttenuation: true,
+        transparent: true, opacity, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        vertexColors: hasColor,
+        // con vertexColors el color del material multiplica: sirve de tinte
+        color: hasColor ? (tint || 0xffffff) : color,
+      });
+    });
+    root.position.set(position[0], position[1], position[2]);
+    if (rotation) root.rotation.set(rotation[0], rotation[1], rotation[2]);
+    root.scale.setScalar(scale);
+    root.frustumCulled = false; // una nube tan grande no debe desaparecer por su centro
+    world.add(root);
+  });
+}
+// galaxia espiral: lejana e inclinada para verle los brazos. Compacta a propósito
+// — escalarla invadiría el campo de batalla y sus estrellas pasarían al lado del
+// jugador como manchas gigantes (una galaxia se mira, no se atraviesa)
+// (arriba y a babor: cuadrante despejado, sin planetas que la pisen)
+// opacidad baja a propósito: con mezcla aditiva y brazos densos, cualquier valor
+// alto satura a blanco puro y se pierden el núcleo y el degradado de los brazos
+loadPointCloud('./assets/ENV_Galaxy_Spiral_01.obj', {
+  position: [-9000, 11000, 6000], rotation: [-0.62, 0.5, 0.25], scale: 1,
+  size: 250, opacity: 0.42, tint: 0xcfe0ff,
+});
+// nebulosa azul: cúmulo de gas bajo, a estribor
+loadPointCloud('./assets/ENV_Nebula_Blue_01.obj', {
+  position: [10000, -6000, 2000], rotation: [0.2, 0.8, 0], scale: 2.6, size: 420,
+  color: 0x8fc8ff, opacity: 0.55, gas: true,
+});
+
 /* ============================== facciones ============================== */
 const CYAN = 0x6fe8ff, RED = 0xff5a3c;
 
