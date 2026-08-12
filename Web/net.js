@@ -66,28 +66,47 @@ const METERED_APP = 'space-battle-sand';
 const METERED_KEY = '553222725c5b43b0cc42bf7e7d394ed28ac6';
 let meteredIce = [];
 
-export async function refreshTurn() {
-  // el navegador puede sobrescribir app/clave sin tocar el código (pruebas)
+/* Relé por orden de preferencia:
+     1. Cloudflare vía /api/turn — 1 TB gratis al mes, credenciales temporales
+        acuñadas en el servidor (el token nunca baja al navegador).
+     2. Metered con la clave del usuario — 20 GB gratis.
+     3. Credenciales estáticas de reserva, por si ninguna API responde. */
+async function tryCloudflare() {
+  try {
+    const r = await fetch('/api/turn');
+    if (!r.ok) return false;                    // 501 = aún sin configurar
+    const j = await r.json();
+    const list = (j.iceServers || []).filter((s) => s && s.urls);
+    if (!list.length) return false;
+    meteredIce = list;
+    note(`relé TURN de Cloudflare listo (${list.length})`);
+    return true;
+  } catch { return false; }
+}
+async function tryMetered() {
   let app = METERED_APP, key = METERED_KEY;
   try {
     app = localStorage.getItem('sb_turn_app') || app;
     key = localStorage.getItem('sb_turn_key') || key;
   } catch { /* modo privado */ }
-  if (!app || !key) return;
+  if (!app || !key) return false;
   try {
     const r = await fetch(`https://${app}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`);
     const j = await r.json();
     if (Array.isArray(j) && j.length) {
       meteredIce = j.filter((s) => s && s.urls);
-      note(`relé TURN listo (${meteredIce.length} servidores)`);
-    } else {
-      meteredIce = [];
-      note(`relé TURN rechazado: ${j && j.error ? j.error : 'respuesta inesperada'}`);
+      note(`relé TURN de Metered listo (${meteredIce.length})`);
+      return true;
     }
-  } catch {
-    meteredIce = [];
-    note('relé TURN: no se pudo consultar');
-  }
+    note(`Metered rechazó la clave: ${j && j.error ? j.error : 'respuesta inesperada'}`);
+  } catch { note('Metered: no se pudo consultar'); }
+  return false;
+}
+export async function refreshTurn() {
+  meteredIce = [];
+  if (await tryCloudflare()) return;
+  if (await tryMetered()) return;
+  note('sin relé por API: se usan las credenciales de reserva');
 }
 
 /* TURN propio, si lo hay. Se guarda en el navegador: en cuanto pegues unas
