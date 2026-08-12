@@ -438,7 +438,7 @@ function startUserMusic() {
   if (!audio || audio.musicTrack) return;
   const { ctx, master } = audio;
   const gain = ctx.createGain();
-  gain.gain.value = 0.42; // presente, pero los efectos mandan
+  gain.gain.value = 0.75; // bien presente ("no se escucha" a 0.42); los efectos siguen encima
   gain.connect(master);
   const src = ctx.createBufferSource();
   src.buffer = audio.musicTrackBuf;
