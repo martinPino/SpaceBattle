@@ -54,6 +54,15 @@
   #playerList li{color:#8fa9bc}
   #playerList li.ready{color:#7fffc4}
   #playerList li.me{font-weight:700}
+  #playerList li.red{color:#ff8a72}
+  #playerList li.blue{color:#7fc4ff}
+  #playerList li.red.ready{color:#ff5a3c}
+  #playerList li.blue.ready{color:#39aaff}
+  .go.mode.on{border-color:#7fe7ff;color:#cfe6f5;background:#16323f}
+  #teamBlue{border-color:#2b6f9f;color:#7fc4ff}
+  #teamRed{border-color:#9f4b2b;color:#ff8a72}
+  #teamBlue.on{background:#12293d;color:#bfe4ff;border-color:#5ab0ff}
+  #teamRed.on{background:#3d1a12;color:#ffc4b0;border-color:#ff7a52}
   #lobbyStatus{min-height:16px;color:#ffd27f;font-size:11px}
   #netLog{margin:0;max-height:104px;overflow:auto;width:400px;font-family:inherit;font-size:9.5px;
     line-height:1.6;color:#5d8298;text-align:left;white-space:pre-wrap;letter-spacing:.02em}
@@ -68,6 +77,10 @@
   #score b{color:#7fe7ff}
   #score .me{color:#fff}
   #score .dead{opacity:.45}
+  #score .head{letter-spacing:.22em;font-size:10px;margin-top:2px}
+  #score .tBlue{color:#7fc4ff}
+  #score .tRed{color:#ff8a72}
+  #score .gap{height:8px}
   body.mp #score{display:block}
   body.touch #score{font-size:9px;top:64px}
   /* aviso de repostaje junto a tu capital */
@@ -172,6 +185,14 @@
     <button class="go alt" id="copyBtn">COPY</button>
   </div>
   <input id="nameBox" maxlength="12" placeholder="YOUR CALLSIGN">
+  <div class="mprow" id="modeRow">
+    <button class="go alt mode" id="modeFfa">FREE FOR ALL</button>
+    <button class="go alt mode" id="modeTeams">TEAMS</button>
+  </div>
+  <div class="mprow hidden" id="teamRow">
+    <button class="go alt team" id="teamBlue">◆ BLUE</button>
+    <button class="go alt team" id="teamRed">◆ RED</button>
+  </div>
   <ul id="playerList"></ul>
   <p id="lobbyStatus"></p>
   <pre id="netLog"></pre>

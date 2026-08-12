@@ -21,6 +21,8 @@ export const net = {
   hostConn: null,      // conexión al anfitrión (solo en invitado)
   players: new Map(),  // id -> { id, name, ready, ship, kills, deaths, bot }
   name: 'PILOT',
+  mode: 'ffa',         // 'ffa' | 'teams'
+  team: 'blue',        // bando propio cuando mode === 'teams'
   started: false,
   onLobby: () => {},
   onStart: () => {},
@@ -150,7 +152,7 @@ export async function hostGame(name) {
   net.role = 'host';
   net.self = id;
   net.id = id;
-  net.players.set(id, { id, name, ready: true, kills: 0, deaths: 0 });
+  net.players.set(id, { id, name: cleanName(name), ready: true, kills: 0, deaths: 0, team: net.team });
   p.on('connection', (conn) => {
     note('entrante: negociando…');
     watchIce(conn);
@@ -179,7 +181,10 @@ function hostHandle(conn, d) {
   if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) { net.onMessage(conn.peer, d); return; }
   switch (d.t) {
     case 'hello':
-      net.players.set(conn.peer, { id: conn.peer, name: String(d.name || 'PILOT').slice(0, 12), ready: false, kills: 0, deaths: 0 });
+      net.players.set(conn.peer, {
+        id: conn.peer, name: cleanName(d.name), ready: false, kills: 0, deaths: 0,
+        team: d.team === 'red' ? 'red' : 'blue',
+      });
       broadcastLobby();
       break;
     case 'ready': {
@@ -187,16 +192,51 @@ function hostHandle(conn, d) {
       if (pl) { pl.ready = !!d.ready; broadcastLobby(); }
       break;
     }
+    case 'rename': { // el nombre puede cambiar en cualquier momento
+      const pl = net.players.get(conn.peer);
+      if (pl) { pl.name = cleanName(d.name); broadcastLobby(); }
+      break;
+    }
+    case 'team': {
+      const pl = net.players.get(conn.peer);
+      if (pl) { pl.team = d.team === 'red' ? 'red' : 'blue'; broadcastLobby(); }
+      break;
+    }
     default:
       net.onMessage(conn.peer, d);
   }
 }
 
+function cleanName(n) { return String(n || 'PILOT').toUpperCase().slice(0, 12) || 'PILOT'; }
+
 export function broadcastLobby() {
   if (net.role !== 'host') return;
-  const list = [...net.players.values()].map((p) => ({ id: p.id, name: p.name, ready: p.ready, kills: p.kills, deaths: p.deaths }));
-  send({ t: 'lobby', players: list, hostId: net.self });
+  const list = [...net.players.values()].map((p) => ({
+    id: p.id, name: p.name, ready: p.ready, kills: p.kills, deaths: p.deaths, team: p.team || 'blue',
+  }));
+  send({ t: 'lobby', players: list, hostId: net.self, mode: net.mode });
   net.onLobby();
+}
+
+/* el nombre y el bando se pueden cambiar en la sala en cualquier momento */
+export function setName(name) {
+  net.name = cleanName(name);
+  if (net.role === 'host') {
+    const me = net.players.get(net.self);
+    if (me) { me.name = net.name; broadcastLobby(); }
+  } else if (net.role === 'guest') net.hostConn?.send({ t: 'rename', name: net.name });
+}
+export function setTeam(team) {
+  net.team = team === 'red' ? 'red' : 'blue';
+  if (net.role === 'host') {
+    const me = net.players.get(net.self);
+    if (me) { me.team = net.team; broadcastLobby(); }
+  } else if (net.role === 'guest') net.hostConn?.send({ t: 'team', team: net.team });
+}
+export function setMode(mode) { // solo el anfitrión decide el tipo de partida
+  if (net.role !== 'host') return;
+  net.mode = mode === 'teams' ? 'teams' : 'ffa';
+  broadcastLobby();
 }
 
 export function startMatch(seed) {
@@ -239,6 +279,7 @@ export async function joinGame(hostId, name) {
     if (d.t === 'lobby') {
       net.players.clear();
       for (const pl of d.players) net.players.set(pl.id, pl);
+      net.mode = d.mode === 'teams' ? 'teams' : 'ffa';
       net.onLobby();
     } else if (d.t === 'start') {
       net.started = true;
@@ -246,7 +287,7 @@ export async function joinGame(hostId, name) {
     } else net.onMessage(hostId, d);
   });
   conn.on('close', () => net.onError('Se perdió la conexión con el anfitrión'));
-  conn.send({ t: 'hello', name });
+  conn.send({ t: 'hello', name: cleanName(name), team: net.team });
   return id;
 }
 

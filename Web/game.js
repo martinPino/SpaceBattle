@@ -11,7 +11,8 @@ import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-text
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
-  iceConfig, getTurn, setTurn, refreshTurn, writePos, readPos, writeQuat, readQuat } from './net.js';
+  setName, setTeam, setMode, iceConfig, getTurn, setTurn, refreshTurn,
+  writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1535,15 +1536,26 @@ const remotePilots = [];              // { id, name, obj, vel, alive, hull, kill
 const pilotTint = [0x7fe7ff, 0xffc46f, 0x9dff7f, 0xff8fd0, 0xc9a0ff, 0xffe97f, 0x7fffe0, 0xff9f7f];
 let mpActive = false, netSendT = 0, snapT = 0, snapSeq = 0;
 
+const TEAM_COLOR = { blue: 0x4fb4ff, red: 0xff5a3c };
+// en partida por equipos manda el color del bando; en todos contra todos, el suyo
+function pilotColor(id, idx) {
+  if (net.mode !== 'teams') return pilotTint[idx % pilotTint.length];
+  return TEAM_COLOR[net.players.get(id)?.team === 'red' ? 'red' : 'blue'];
+}
+function tintPilot(rp) {
+  const c = new THREE.Color(pilotColor(rp.id, rp.idx));
+  rp.obj.traverse((o) => {
+    if (!o.isMesh || !o.material.emissive) return;
+    const n = o.material.name || '';
+    if (n.includes('Emissive') || n.includes('EngineCore')) o.material.emissive.copy(c);
+  });
+}
 function makeRemotePilot(id, name, idx) {
   const obj = allyTemplate.clone();
   obj.traverse((o) => {
     if (!o.isMesh) return;
     const n = o.material.name || '';
-    if (n.includes('Emissive_Cyan') || n.includes('EngineCore')) {
-      o.material = o.material.clone();
-      o.material.emissive = new THREE.Color(pilotTint[idx % pilotTint.length]);
-    }
+    if (n.includes('Emissive') || n.includes('EngineCore')) o.material = o.material.clone();
   });
   scene.add(obj);
   const rp = {
@@ -1554,8 +1566,12 @@ function makeRemotePilot(id, name, idx) {
     lerpT: 1, faction: 'ally', isPilot: true,
   };
   remotePilots.push(rp);
+  tintPilot(rp);
   return rp;
 }
+// bandos: mismo color, sin fuego amigo
+function teamOf(id) { return net.players.get(id)?.team === 'red' ? 'red' : 'blue'; }
+function isFriendly(id) { return net.mode === 'teams' && teamOf(id) === teamOf(net.self); }
 function pilotById(id) { return remotePilots.find((p) => p.id === id); }
 function removeRemotePilot(id) {
   const i = remotePilots.findIndex((p) => p.id === id);
@@ -1689,6 +1705,8 @@ function onNetMessage(from, d) {
       const rp = pilotById(src) || (net.players.has(src)
         ? makeRemotePilot(src, net.players.get(src).name, [...net.players.keys()].indexOf(src)) : null);
       if (!rp) return;
+      const info = net.players.get(src); // el nombre y el bando pueden haber cambiado
+      if (info && info.name !== rp.name) rp.name = info.name;
       rp.prevPos.copy(rp.obj.position);
       rp.nextPos.set(d.p[0], d.p[1], d.p[2]);
       rp.prevQ.copy(rp.obj.quaternion);
@@ -1708,7 +1726,10 @@ function onNetMessage(from, d) {
       break;
     }
     case 'hit': { // alguien dice que te ha dado (quien dispara resuelve)
-      if (d.to === net.self) { damagePlayer(d.dmg); if (player.dead) netSend({ t: 'died', by: from }); }
+      // segundo cerrojo del fuego amigo: si el mensaje llega igualmente
+      // (paquete en vuelo al cambiar de bando), aquí se descarta
+      if (d.to === net.self && isFriendly(d.from || from)) return;
+      if (d.to === net.self) { damagePlayer(d.dmg); if (player.dead) netSend({ t: 'died', by: d.from || from }); }
       else if (net.role === 'host') netSend(d, from);
       break;
     }
@@ -1728,22 +1749,30 @@ function onNetMessage(from, d) {
 
 // tu disparo contra otro jugador lo resuelves tú y le mandas el daño
 function netHitPilot(rp, dmg) {
-  netSend({ t: 'hit', to: rp.id, dmg });
+  netSend({ t: 'hit', to: rp.id, dmg, from: net.self });
   flash(rp.obj.position, true, 5, 0.2);
 }
 
 function drawScore() {
   const box = el('score');
   if (!mpActive) { box.style.display = 'none'; return; }
-  const rows = [...net.players.values()]
-    .sort((a, b) => (b.kills || 0) - (a.kills || 0))
-    .map((p) => {
-      const me = p.id === net.self ? ' me' : '';
-      const rp = pilotById(p.id);
-      const dead = (p.id !== net.self && rp && !rp.alive) || (p.id === net.self && player.dead) ? ' dead' : '';
-      return `<div class="${me}${dead}">${p.name} <b>${p.kills || 0}</b>/${p.deaths || 0}</div>`;
-    });
-  box.innerHTML = rows.join('');
+  const row = (p) => {
+    const me = p.id === net.self ? ' me' : '';
+    const rp = pilotById(p.id);
+    const dead = (p.id !== net.self && rp && !rp.alive) || (p.id === net.self && player.dead) ? ' dead' : '';
+    return `<div class="${me}${dead}">${p.name} <b>${p.kills || 0}</b>/${p.deaths || 0}</div>`;
+  };
+  const all = [...net.players.values()].sort((a, b) => (b.kills || 0) - (a.kills || 0));
+  if (net.mode !== 'teams') { box.innerHTML = all.map(row).join(''); return; }
+  // por equipos: cada bando con su total arriba
+  const parts = [];
+  for (const [team, cls] of [['blue', 'tBlue'], ['red', 'tRed']]) {
+    const side = all.filter((p) => (p.team === 'red' ? 'red' : 'blue') === team);
+    if (!side.length) continue;
+    const pts = side.reduce((s, p) => s + (p.kills || 0), 0);
+    parts.push(`<div class="${cls} head">${team.toUpperCase()} <b>${pts}</b></div>` + side.map(row).join(''));
+  }
+  box.innerHTML = parts.join('<div class="gap"></div>');
 }
 
 /* al caer en multijugador vuelves al hangar: 3 s de espera y otra vez dentro */
@@ -1781,14 +1810,30 @@ function respawnTick(dt) {
 
 /* ------------------------------ sala ------------------------------ */
 function lobbyRefresh() {
+  const teams = net.mode === 'teams';
   const list = el('playerList');
-  list.innerHTML = [...net.players.values()].map((p) =>
-    `<li class="${p.ready ? 'ready' : ''} ${p.id === net.self ? 'me' : ''}">${p.ready ? '✓' : '·'} ${p.name}${p.id === net.id ? ' (host)' : ''}</li>`).join('');
+  const entries = [...net.players.values()];
+  const sorted = teams
+    ? entries.slice().sort((a, b) => (a.team === 'red' ? 1 : 0) - (b.team === 'red' ? 1 : 0))
+    : entries;
+  list.innerHTML = sorted.map((p) => {
+    const side = teams ? (p.team === 'red' ? 'red' : 'blue') : '';
+    const badge = teams ? (p.team === 'red' ? '◆ ' : '◆ ') : '';
+    return `<li class="${p.ready ? 'ready' : ''} ${p.id === net.self ? 'me' : ''} ${side}">`
+      + `${p.ready ? '✓' : '·'} ${badge}${p.name}${p.id === net.id ? ' (host)' : ''}</li>`;
+  }).join('');
   const n = net.players.size;
   el('lobbyStatus').textContent = net.role === 'host'
-    ? `${n}/8 pilots · you all fly for the allied fleet — free for all`
-    : `${n}/8 pilots · waiting for the host to launch`;
+    ? `${n}/8 pilots · ${teams ? 'teams — no friendly fire' : 'free for all'}`
+    : `${n}/8 pilots · ${teams ? 'teams' : 'free for all'} · waiting for the host`;
   el('lobbyGo').textContent = net.role === 'host' ? 'LAUNCH' : (net.players.get(net.self)?.ready ? 'NOT READY' : 'READY');
+  // el modo lo elige el anfitrión; el bando, cada uno
+  el('modeRow').style.display = net.role === 'host' ? 'flex' : 'none';
+  el('modeFfa').classList.toggle('on', !teams);
+  el('modeTeams').classList.toggle('on', teams);
+  el('teamRow').classList.toggle('hidden', !teams);
+  el('teamBlue').classList.toggle('on', net.team !== 'red');
+  el('teamRed').classList.toggle('on', net.team === 'red');
   drawScore();
 }
 
@@ -1817,7 +1862,14 @@ function wireLobby() {
     document.getElementById('start').classList.add('hidden');
   };
   const nameOf = () => (el('nameBox').value || 'PILOT').toUpperCase().slice(0, 12);
-  net.onLobby = lobbyRefresh;
+  // al llegar la lista, refrescar nombres y colores de los que ya vuelan
+  net.onLobby = () => {
+    for (const rp of remotePilots) {
+      const info = net.players.get(rp.id);
+      if (info) { rp.name = info.name; tintPilot(rp); }
+    }
+    lobbyRefresh();
+  };
   net.onMessage = onNetMessage;
   diag.onLog = () => { const b = el('netLog'); b.textContent = diag.log.join('\n'); b.scrollTop = b.scrollHeight; };
 
@@ -1905,6 +1957,13 @@ function wireLobby() {
     if (net.role === 'host') startMatch(1);
     else { const me = net.players.get(net.self); setReady(!(me && me.ready)); }
   };
+  // el nombre viaja en cuanto lo cambias (antes solo se enviaba al entrar)
+  el('nameBox').oninput = () => { if (net.role !== 'solo') setName(el('nameBox').value); };
+  el('modeFfa').onclick = () => setMode('ffa');
+  el('modeTeams').onclick = () => setMode('teams');
+  const pickTeam = (t) => { setTeam(t); lobbyRefresh(); };
+  el('teamBlue').onclick = () => pickTeam('blue');
+  el('teamRed').onclick = () => pickTeam('red');
   el('lobbyBack').onclick = () => {
     netLeave();
     el('lobby').classList.add('hidden');
@@ -2049,17 +2108,21 @@ function drawMarkers() {
   for (const f of fighters) if (f.alive && f.faction === 'enemy') mark(f.obj.position, false);
   for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false, s.isGunship);
   if (capitals.enemy.alive) mark(capitals.enemy.group.position, true);
-  // pilotos rivales: marco blanco con su nombre — en todos contra todos, todos cuentan
+  // otros pilotos: marco cuadrado con su nombre. Los tuyos en verde para no
+  // confundirte a media maniobra; los rivales en blanco (o rojo si son enemigos)
   for (const rp of remotePilots) {
     if (!rp.alive) continue;
     tmp.copy(rp.obj.position).project(camera);
     if (tmp.z > 1 || Math.abs(tmp.x) > 1.05 || Math.abs(tmp.y) > 1.05) continue;
     const sx = (tmp.x + 1) / 2 * markC.width, sy = (1 - tmp.y) / 2 * markC.height;
     const s = THREE.MathUtils.clamp(6500 / rp.obj.position.distanceTo(ship.position), 8, 30);
-    mctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    const friend = isFriendly(rp.id);
+    const col = friend ? 'rgba(120,255,170,0.85)'
+      : net.mode === 'teams' ? 'rgba(255,110,80,0.9)' : 'rgba(255,255,255,0.85)';
+    mctx.strokeStyle = col;
     mctx.lineWidth = 1.5;
     mctx.strokeRect(sx - s, sy - s, s * 2, s * 2);
-    mctx.fillStyle = 'rgba(255,255,255,0.85)';
+    mctx.fillStyle = col;
     mctx.font = '10px monospace';
     mctx.textAlign = 'center';
     mctx.fillText(rp.name, sx, sy - s - 6);
@@ -2647,7 +2710,7 @@ function update(dt) {
     // duelo entre jugadores: quien dispara resuelve su impacto y manda el daño
     if (!dead && l.isPlayer && mpActive) {
       for (const rp of remotePilots) {
-        if (!rp.alive) continue;
+        if (!rp.alive || isFriendly(rp.id)) continue; // a los tuyos no se les dispara
         if (segmentHitsSphere(segPrev, segStep, rp.obj.position, 8)) {
           netHitPilot(rp, 12);
           hitMarkT = 0.16;
