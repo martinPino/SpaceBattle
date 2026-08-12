@@ -45,6 +45,25 @@
   .overlay .go{margin-top:10px;padding:10px 26px;border:1px solid #2b6f85;border-radius:4px;color:#aef;cursor:pointer;font-family:inherit;font-size:13px;letter-spacing:.2em;background:#0c1a24}
   .overlay .go:hover{background:#12242f}
   .overlay .go.alt{border-color:#25505f;color:#7fa8bb;font-size:11px;padding:8px 18px}
+  /* selector de nave */
+  #shipPick{display:flex;flex-direction:column;align-items:center;gap:4px;margin:2px 0}
+  .lbl2{font-size:10px;letter-spacing:.28em;color:#5b7c92}
+  /* carrusel con vista 3D de la nave */
+  #shipViewer{position:relative;width:440px;height:200px;max-width:88vw}
+  #shipCanvas{width:100%;height:100%;display:block;border:1px solid #1a3543;border-radius:6px;
+    background:radial-gradient(ellipse at 50% 55%, #0d1c26 0%, #050a0f 70%)}
+  .arrow{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:52px;border:1px solid #234655;
+    border-radius:4px;background:rgba(8,20,28,.75);color:#7fe7ff;font-size:22px;line-height:1;cursor:pointer;
+    font-family:inherit;z-index:2}
+  .arrow:hover{background:#12242f}
+  #shipPrev{left:6px}
+  #shipNext{right:6px}
+  #shipDots{position:absolute;left:0;right:0;bottom:8px;display:flex;gap:6px;justify-content:center}
+  #shipDots i{width:6px;height:6px;border-radius:50%;background:#2b4d5e;display:block}
+  #shipDots i.on{background:#7fe7ff}
+  #shipName{font-size:13px;letter-spacing:.24em;color:#cfe6f5}
+  #shipInfo{font-size:10px;color:#5b7c92;letter-spacing:.08em;min-height:14px}
+  @media (max-height:640px){ #shipViewer{height:132px} }
   .mprow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
   #lobby input{background:#0a141c;border:1px solid #234655;color:#cfe6f5;font-family:inherit;
     font-size:12px;padding:9px 12px;border-radius:4px;letter-spacing:.14em;text-align:center;width:260px}
@@ -170,6 +189,17 @@
   <b>Q/E</b> roll · <b>Shift</b> boost · <b>Space / left click</b> — lasers · <b>right click</b> — guided missile<br><br>
   Fleet battle: your squadron against theirs, capital against capital.<br>
   Wipe out the enemy squadron.</p>
+  <div id="shipPick">
+    <div class="lbl2">CHOOSE YOUR SHIP</div>
+    <div id="shipViewer">
+      <button class="arrow" id="shipPrev">‹</button>
+      <canvas id="shipCanvas" width="440" height="200"></canvas>
+      <button class="arrow" id="shipNext">›</button>
+      <div id="shipDots"></div>
+    </div>
+    <div id="shipName">INTERCEPTOR</div>
+    <div id="shipInfo">kit · all-rounder</div>
+  </div>
   <button class="go" id="startBtn">ENTER COCKPIT</button>
   <div class="mprow">
     <button class="go alt" id="hostBtn">HOST A GAME</button>

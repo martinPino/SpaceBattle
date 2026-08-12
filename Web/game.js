@@ -10,6 +10,7 @@ import {
 import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   setName, setTeam, setMode, iceConfig, getTurn, setTurn, refreshTurn,
   writePos, readPos, writeQuat, readQuat } from './net.js';
@@ -313,6 +314,44 @@ const player = {
   vel: new THREE.Vector3(), angVel: new THREE.Vector3(),
   shield: 100, hull: 100, dead: false, radius: 6,
 };
+
+/* ======================= ELECCIÓN DE NAVE =======================
+   Se sustituye solo el CUERPO visible, no la nave entera: los marcadores del
+   kit (bocas de cañón, motores, punto de cámara) se quedan en su sitio, así
+   que disparos, estelas y cámara funcionan igual con cualquier modelo. Todos
+   vienen normalizados a 12 m de largo desde Blender. */
+const SHIPS = [
+  { id: 'kit', name: 'INTERCEPTOR', tag: 'kit · all-rounder', file: null, yaw: 0, scale: 1 },
+  { id: 'fighterjet', name: 'FIGHTER JET X', tag: 'sleek · atmospheric', file: './assets/ships/ship-fighterjet.glb', yaw: 0, scale: 1 },
+  { id: 'vanguard', name: 'OBSIDIAN VANGUARD', tag: 'heavy · armored', file: './assets/ships/ship-vanguard.glb', yaw: 0, scale: 1 },
+  { id: 'mothership', name: 'KSS-X', tag: 'exotic · alien hull', file: './assets/ships/ship-mothership.glb', yaw: 0, scale: 1 },
+];
+let currentShipId = 'kit';
+let shipBody = null;                 // cuerpo añadido (null = el del kit)
+const shipCache = new Map();
+const kitMeshes = [];                // mallas propias del kit, para poder ocultarlas
+
+function applyShip(id, onDone) {
+  const spec = SHIPS.find((s) => s.id === id) || SHIPS[0];
+  currentShipId = spec.id;
+  if (!kitMeshes.length) ship.traverse((o) => { if (o.isMesh) kitMeshes.push(o); });
+  const showKit = (v) => { for (const m of kitMeshes) m.visible = v; };
+  if (shipBody) { ship.remove(shipBody); shipBody = null; }
+  if (!spec.file) { showKit(true); onDone && onDone(); return; }
+  const install = (src) => {
+    shipBody = src.clone();
+    shipBody.rotation.y = THREE.MathUtils.degToRad(spec.yaw || 0);
+    shipBody.scale.setScalar(spec.scale || 1);
+    ship.add(shipBody);
+    showKit(false);
+    onDone && onDone();
+  };
+  if (shipCache.has(spec.id)) { install(shipCache.get(spec.id)); return; }
+  new GLTFLoader().load(spec.file, (g) => {
+    shipCache.set(spec.id, g.scene);
+    install(g.scene);
+  }, undefined, () => { showKit(true); onDone && onDone(); }); // si falla, el del kit
+}
 
 /* ---- ascuas de daño: con el casco tocado, tu nave suelta chispas y humo ---- */
 const emberTex = radialGlow([1.0, 0.6, 0.28], 0.3);
@@ -981,10 +1020,11 @@ function bakeSwarmGeometry(template) {
     glow: glowGeos.length ? mergeGeometries(glowGeos) : null,
   };
 }
-function makeSwarmBatch(faction) {
+function makeSwarmBatch(faction) { return makeSwarmBatchFrom(makeSwarmTemplate(faction), faction); }
+function makeSwarmBatchFrom(template, faction) {
   // el bando enemigo reserva capacidad ×4: las oleadas doblan sus filas
   const capacity = faction === 'ally' ? SWARM_PER_SIDE : ENEMY_SWARM_MAX;
-  const baked = bakeSwarmGeometry(makeSwarmTemplate(faction));
+  const baked = bakeSwarmGeometry(template);
   const hull = new THREE.InstancedMesh(baked.hull, new THREE.MeshStandardMaterial({
     vertexColors: true, metalness: 0.25, roughness: 0.55, envMapIntensity: 1.0,
     // rescoldo por bando: el enjambre se lee contra el vacío igual que los héroes
@@ -1001,6 +1041,39 @@ function makeSwarmBatch(faction) {
   return { hull, glow };
 }
 const swarmBatches = { ally: makeSwarmBatch('ally'), enemy: makeSwarmBatch('enemy') };
+
+/* ---------------- caza del enjambre: modelo Starflyer del usuario ----------------
+   Venía con 99.918 triángulos: multiplicado por las ~200 instancias visibles
+   serían 14 millones de vértices por fotograma. Reducido a 2.500 en Blender
+   (y sin texturas, que el horneado descarta las UV igualmente). */
+const SWARM_TINT = { ally: 0x8fa7b8, enemy: 0xb06a58 };
+function replaceSwarmBatch(faction, source) {
+  const tpl = source.clone();
+  tpl.scale.setScalar(1.25); // algo mayores que el caza del kit: se leen mejor
+  const tint = new THREE.Color(SWARM_TINT[faction]);
+  tpl.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = new THREE.MeshStandardMaterial({
+      color: tint, metalness: 0.35, roughness: 0.55,
+      emissive: new THREE.Color(faction === 'ally' ? 0x16303c : 0x3c1a14), emissiveIntensity: 0.45,
+    });
+  });
+  const old = swarmBatches[faction];
+  const fresh = makeSwarmBatchFrom(tpl, faction);
+  swarmBatches[faction] = fresh;
+  if (old) { // fuera la malla anterior y su memoria de GPU
+    for (const m of [old.hull, old.glow]) {
+      if (!m) continue;
+      scene.remove(m);
+      m.geometry.dispose();
+      m.material.dispose();
+    }
+  }
+}
+new GLTFLoader().load('./assets/ships/swarm-starflyer.glb', (g) => {
+  replaceSwarmBatch('ally', g.scene);
+  replaceSwarmBatch('enemy', g.scene);
+}, undefined, () => { /* si falla, se queda el caza del kit */ });
 
 /* ===================== CAÑONERAS ENEMIGAS (SHIP_Enemy_Gunship_01) =====================
    Naves pesadas de 24,5 m — el doble que un caza — con 4 cañones láser y pods de
@@ -1959,6 +2032,64 @@ function wireLobby() {
   };
   // el nombre viaja en cuanto lo cambias (antes solo se enviaba al entrar)
   el('nameBox').oninput = () => { if (net.role !== 'solo') setName(el('nameBox').value); };
+
+  /* -------- carrusel de naves con vista 3D --------
+     Escena propia y diminuta: así la nave gira sobre fondo limpio sin tocar la
+     batalla, y solo dibuja mientras el menú está a la vista. */
+  const canvas = el('shipCanvas');
+  const pv = {
+    renderer: new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true }),
+    scene: new THREE.Scene(),
+    camera: new THREE.PerspectiveCamera(38, canvas.width / canvas.height, 0.1, 200),
+    pivot: new THREE.Group(),
+    idx: 0, model: null,
+  };
+  pv.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  pv.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  pv.renderer.toneMappingExposure = 1.25;
+  pv.camera.position.set(0, 4.2, 17);
+  pv.camera.lookAt(0, 0, 0);
+  pv.scene.environment = envRig.env;
+  pv.scene.add(pv.pivot);
+  { // mismo rig de luces que la batalla, para que la nave se vea como se verá
+    const k = new THREE.DirectionalLight(0xfff8f0, 3.6); k.position.set(6, 5, 8);
+    const b = new THREE.DirectionalLight(0x3f6f9a, 1.2); b.position.set(-6, -2, -5);
+    const r2 = new THREE.DirectionalLight(0x9fd0e8, 1.1); r2.position.set(-4, 3, -8);
+    pv.scene.add(k, b, r2);
+  }
+  el('shipDots').innerHTML = SHIPS.map(() => '<i></i>').join('');
+
+  function showShip(i, updateGame = true) {
+    pv.idx = (i + SHIPS.length) % SHIPS.length;
+    const spec = SHIPS[pv.idx];
+    el('shipName').textContent = spec.name;
+    el('shipInfo').textContent = spec.file && !shipCache.has(spec.id) ? 'loading hull…' : spec.tag;
+    [...el('shipDots').children].forEach((d, k) => d.classList.toggle('on', k === pv.idx));
+    const place = (src) => {
+      if (pv.model) pv.pivot.remove(pv.model);
+      pv.model = src.clone();
+      pv.model.position.set(0, 0, 0);
+      pv.pivot.add(pv.model);
+      el('shipInfo').textContent = spec.tag;
+    };
+    if (!spec.file) place(ship);                       // el caza del kit, tal cual
+    else if (shipCache.has(spec.id)) place(shipCache.get(spec.id));
+    else new GLTFLoader().load(spec.file, (g) => { shipCache.set(spec.id, g.scene); place(g.scene); },
+      undefined, () => { el('shipInfo').textContent = 'could not load this hull'; });
+    if (updateGame) applyShip(spec.id);
+  }
+  el('shipPrev').onclick = () => showShip(pv.idx - 1);
+  el('shipNext').onclick = () => showShip(pv.idx + 1);
+  showShip(0, false);
+
+  // bucle propio: solo mientras la pantalla de inicio está visible
+  (function spin() {
+    requestAnimationFrame(spin);
+    if (document.getElementById('start').classList.contains('hidden')) return;
+    pv.pivot.rotation.y += 0.008;
+    pv.pivot.rotation.x = Math.sin(pv.pivot.rotation.y * 0.5) * 0.09;
+    pv.renderer.render(pv.scene, pv.camera);
+  })();
   el('modeFfa').onclick = () => setMode('ffa');
   el('modeTeams').onclick = () => setMode('teams');
   const pickTeam = (t) => { setTeam(t); lobbyRefresh(); };
@@ -1998,7 +2129,8 @@ let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
 window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, colliders,
-  net, encodeFleet, decodeFleet, onNetMessage, remotePilots, makeRemotePilot, drawScore,
+  net, encodeFleet, decodeFleet, onNetMessage, remotePilots, makeRemotePilot, drawScore, applyShip, SHIPS,
+  get shipBody() { return shipBody; },
   set snapSeq(v) { snapSeq = v; }, get snapSeq() { return snapSeq; },
   set mpActive(v) { mpActive = v; }, get mpActive() { return mpActive; }, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,
   get shake() { return shake; }, get hitMarkT() { return hitMarkT; }, get missileAmmo() { return missileAmmo; }, set missileAmmo(v) { missileAmmo = v; }, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
