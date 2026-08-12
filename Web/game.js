@@ -9,6 +9,7 @@ import {
 } from '../Tools/viewer/space-kit-models.js';
 import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
 /* ============================== escenario ============================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -804,7 +805,11 @@ function bakeSwarmGeometry(template) {
     geo.deleteAttribute('uv');
     if (geo.getAttribute('uv1')) geo.deleteAttribute('uv1');
     const mat = o.material;
-    const isGlow = (mat.emissiveIntensity || 0) > 0.5 && mat.emissive;
+    // "emisivo" = emite luz DE VERDAD: intensidad alta Y color no negro.
+    // (mirar solo la intensidad marcaba como brillo negro todo material recién
+    // creado del kit — su emissiveIntensity por defecto es 1 con emisivo negro)
+    const emisSum = mat.emissive ? mat.emissive.r + mat.emissive.g + mat.emissive.b : 0;
+    const isGlow = emisSum > 0.05 && (mat.emissiveIntensity || 0) > 0.5;
     const c = isGlow
       ? mat.emissive.clone().multiplyScalar(Math.min(2.4, mat.emissiveIntensity * 0.85))
       : (mat.color ? mat.color.clone().multiplyScalar(1.15) : new THREE.Color(0.8, 0.8, 0.8));
@@ -840,6 +845,62 @@ function makeSwarmBatch(faction) {
 }
 const swarmBatches = { ally: makeSwarmBatch('ally'), enemy: makeSwarmBatch('enemy') };
 
+/* ===================== CAÑONERAS ENEMIGAS (SHIP_Enemy_Gunship_01) =====================
+   Naves pesadas de 24,5 m — el doble que un caza — con 4 cañones láser y pods de
+   misiles. Se hornean a InstancedMesh igual que el enjambre: 15 naves de 12.834
+   caras costarían ~2.000 draw calls como objetos sueltos; así cuestan 2. */
+const GUNSHIP_PER_WAVE = 15, GUNSHIP_MAX = 60;
+// posiciones locales medidas sobre el modelo (morro en +Z)
+const GUN_MUZZLES = [[-7.30, 0.34, 8.68], [7.30, 0.34, 8.68], [-2.05, -2.01, 10.48], [2.05, -2.01, 10.48]];
+const GUN_PODS = [[-4.5, -1.64, 1.6], [4.5, -1.64, 1.6]];
+// fuera el detalle diminuto: 15 cañoneras a máxima densidad hunden el móvil
+const GUN_DETAIL_CUT = /Greeble|PlateSeam|Vent_|Collar_|_Ring_|WarStripe|LeadingEdge|NavLight|Fin_[LR]$/;
+// el OBJ nombra sus materiales como el kit: se remapean a la paleta real
+const GUN_MAT_MAP = {
+  MAT_Hull_Dark: MAT.hull_dark, MAT_Hull_Mid: MAT.hull_mid, MAT_Hull_Black: MAT.hull_black,
+  MAT_Accent_Amber: MAT.accent, MAT_Cockpit_Glass: MAT.glass,
+  MAT_Emissive_Red: MAT.emis_red, MAT_Emissive_EngineCore: MAT.emis_white,
+};
+function makeGunshipBatch(template) {
+  const baked = bakeSwarmGeometry(template);
+  const hull = new THREE.InstancedMesh(baked.hull, new THREE.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.3, roughness: 0.5, envMapIntensity: 1.0,
+    emissive: 0x3c1a14, emissiveIntensity: 0.5,
+  }), GUNSHIP_MAX);
+  hull.frustumCulled = false;
+  scene.add(hull);
+  let glow = null;
+  if (baked.glow) {
+    glow = new THREE.InstancedMesh(baked.glow, new THREE.MeshBasicMaterial({ vertexColors: true }), GUNSHIP_MAX);
+    glow.frustumCulled = false;
+    scene.add(glow);
+  }
+  return { hull, glow };
+}
+// respaldo si el OBJ no carga: un caza enemigo agrandado — la misión siempre es ganable
+function gunshipFallbackTemplate() {
+  const t = enemyTemplate.clone();
+  t.scale.setScalar(2.0);
+  return t;
+}
+new OBJLoader().load(
+  './assets/SHIP_Enemy_Gunship_01.obj',
+  (obj) => {
+    const drop = [];
+    obj.traverse((o) => {
+      if (!o.isMesh) return;
+      if (GUN_DETAIL_CUT.test(o.name)) { drop.push(o); return; }
+      const make = GUN_MAT_MAP[o.material && o.material.name];
+      if (make) o.material = make();
+    });
+    for (const o of drop) o.parent.remove(o);
+    liftShipVisibility(obj, 'enemy'); // luces de posición: legible contra el vacío
+    swarmBatches.gunship = makeGunshipBatch(obj);
+  },
+  undefined,
+  () => { swarmBatches.gunship = makeGunshipBatch(gunshipFallbackTemplate()); },
+);
+
 const swarm = [];
 function resetSwarmShip(s, immediate) {
   const home = s.faction === 'ally' ? alliedCapital.position : enemyCapital.position;
@@ -849,18 +910,21 @@ function resetSwarmShip(s, immediate) {
     home.z + (s.faction === 'ally' ? 1 : -1) * (immediate ? 700 + Math.random() * 2200 : 300),
   );
   s.vel.set(0, 0, 0);
-  s.hp = 6;
+  s.hp = s.isGunship ? 14 : 6; // la cañonera aguanta lo que dos escuadrillas
   s.alive = true;
   s.target = null;
   s.retarget = Math.random() * 2;
   s.nextShot = 2 + Math.random() * 3;
+  if (s.isGunship) { s.burst = 0; s.burstCool = 0; s.nextMissile = 6 + Math.random() * 8; }
 }
-let enabledEnemySwarm = SWARM_PER_SIDE; // slots enemigos activos esta oleada
+// de las 100 naves enemigas, 15 son cañoneras pesadas
+const ENEMY_SWARM_BASE = SWARM_PER_SIDE - GUNSHIP_PER_WAVE; // 77 cazas ligeros
+let enabledEnemySwarm = ENEMY_SWARM_BASE, enabledGunships = GUNSHIP_PER_WAVE;
 for (const faction of ['ally', 'enemy']) {
   const count = faction === 'ally' ? SWARM_PER_SIDE : ENEMY_SWARM_MAX;
   for (let i = 0; i < count; i++) {
     const s = {
-      obj: new THREE.Object3D(), faction, slot: i,
+      obj: new THREE.Object3D(), faction, slot: i, batchKey: faction,
       vel: new THREE.Vector3(), hp: 3, alive: true, target: null,
       retarget: 0, nextShot: 0, orbitDir: Math.random() > 0.5 ? 1 : -1,
       weaveF: 0.5 + Math.random() * 0.9,
@@ -872,13 +936,30 @@ for (const faction of ['ally', 'enemy']) {
     swarm.push(s);
   }
 }
+const gunships = [];
+for (let i = 0; i < GUNSHIP_MAX; i++) {
+  const g = {
+    obj: new THREE.Object3D(), faction: 'enemy', slot: i, batchKey: 'gunship',
+    isGunship: true, radius: 13,
+    vel: new THREE.Vector3(), hp: 14, alive: true, target: null,
+    retarget: 0, nextShot: 0, burst: 0, burstCool: 0, nextMissile: 0,
+    orbitDir: Math.random() > 0.5 ? 1 : -1,
+    weaveF: 0.28 + Math.random() * 0.35,   // pesadas: serpentean lento y amplio
+    weavePh: Math.random() * Math.PI * 2,
+    weaveAmp: 0.22 + Math.random() * 0.25,
+  };
+  resetSwarmShip(g, true);
+  if (i >= enabledGunships) g.alive = false;
+  gunships.push(g);
+  swarm.push(g); // comparten IA, colisiones, radar, marcadores y conteo de bajas
+}
 // flotas FINITAS: 100 naves por bando y ni una más — cada baja acerca el final
 function killSwarmShip(s, byPlayer) {
   s.alive = false;
-  flash(s.obj.position, true, 22, 0.55);
-  sfxExplosion(1.2, gainFor(s.obj.position, 1400));
+  flash(s.obj.position, true, s.isGunship ? 46 : 22, s.isGunship ? 0.9 : 0.55);
+  sfxExplosion(s.isGunship ? 2.4 : 1.2, gainFor(s.obj.position, s.isGunship ? 2200 : 1400));
   if (s.faction === 'enemy') {
-    if (byPlayer) message('SWARM FIGHTER DOWN');
+    if (byPlayer) message(s.isGunship ? 'ENEMY GUNSHIP DESTROYED' : 'SWARM FIGHTER DOWN');
     registerEnemyKill();
   }
 }
@@ -887,12 +968,14 @@ const instMatrix = new THREE.Matrix4();
 const oneScale = new THREE.Vector3(1, 1, 1), zeroScale = new THREE.Vector3(0, 0, 0);
 function updateSwarmInstances() {
   for (const s of swarm) {
-    const batch = swarmBatches[s.faction];
+    const batch = swarmBatches[s.batchKey];
+    if (!batch) continue; // las cañoneras esperan a que su modelo termine de cargar
     instMatrix.compose(s.obj.position, s.obj.quaternion, s.alive ? oneScale : zeroScale);
     batch.hull.setMatrixAt(s.slot, instMatrix);
     if (batch.glow) batch.glow.setMatrixAt(s.slot, instMatrix);
   }
-  for (const b of [swarmBatches.ally, swarmBatches.enemy]) {
+  for (const b of [swarmBatches.ally, swarmBatches.enemy, swarmBatches.gunship]) {
+    if (!b) continue;
     b.hull.instanceMatrix.needsUpdate = true;
     if (b.glow) b.glow.instanceMatrix.needsUpdate = true;
   }
@@ -937,7 +1020,11 @@ function registerEnemyKill() {
 // el misil pega MUCHO más que el láser: un caza, del impacto; la capital, 150 al casco
 function missileHit(target, pos) {
   if (target.isCapital) return; // el golpe al casco lo resuelven sus esferas de colisión
-  if (target.slot !== undefined) {
+  if (target.isGunship) {       // blindada: hacen falta dos misiles (o 14 láseres)
+    target.hp -= 8;
+    if (target.hp <= 0) killSwarmShip(target, true);
+    else flash(pos, true, 9, 0.25);
+  } else if (target.slot !== undefined) {
     target.hp = 0;
     killSwarmShip(target, true);
   } else {
@@ -982,17 +1069,23 @@ function startNextWave() {
   kills = 0;
   hud.kills.textContent = 0;
   clearProjectiles();
-  // EL DOBLE de enemigos por oleada (tope ×4 en la 3+): enjambre y élite
+  // EL DOBLE de enemigos por oleada (tope ×4 en la 3+): enjambre, élite y cañoneras
   const mult = Math.min(Math.pow(2, wave - 1), 4);
-  enabledEnemySwarm = Math.min(SWARM_PER_SIDE * mult, ENEMY_SWARM_MAX);
+  enabledEnemySwarm = Math.min(ENEMY_SWARM_BASE * mult, ENEMY_SWARM_MAX);
+  enabledGunships = Math.min(GUNSHIP_PER_WAVE * mult, GUNSHIP_MAX);
   const eliteTarget = Math.min(ENEMY_TOTAL * mult, 32);
   let enemyElites = fighters.filter((f) => f.faction === 'enemy').length;
   while (enemyElites < eliteTarget) { spawnFighter('enemy', enemyElites, eliteTarget); enemyElites++; }
-  waveEnemyTotal = enabledEnemySwarm + eliteTarget;
+  waveEnemyTotal = enabledEnemySwarm + eliteTarget + enabledGunships;
   el('killTotal').textContent = waveEnemyTotal;
+  for (let i = 0; i < GUNSHIP_MAX; i++) {
+    if (i < enabledGunships) { if (!gunships[i].alive) resetSwarmShip(gunships[i], true); }
+    else gunships[i].alive = false;
+  }
   for (const f of fighters) if (!f.alive) reviveFighter(f);
   let enemyIdx = 0;
   for (const s of swarm) {
+    if (s.isGunship) continue; // las cañoneras ya se repusieron arriba
     if (s.faction === 'ally') {
       if (!s.alive) resetSwarmShip(s, true);
     } else {
@@ -1089,12 +1182,38 @@ function launchMissile() {
   m.add(flame);
   scene.add(m);
   missiles.push({
-    mesh: m, target,
+    mesh: m, target, faction: 'ally',
     vel: fwd.clone().multiplyScalar(Math.max(90, player.vel.length() + 50)),
     life: 9,
   });
   message('MISSILE AWAY');
   sfxMissile();
+}
+
+/* misil de cañonera enemiga: más lento y de giro más blando que el tuyo —
+   se puede esquivar volando en tangente, pero si conecta rompe el escudo */
+const enemyMissileMat = new THREE.MeshBasicMaterial({ color: 0xffd0b0 });
+const enemyMissileFlameTex = radialGlow([1.0, 0.55, 0.35], 0.32);
+function launchEnemyMissile(origin, target) {
+  if (!target || !target.alive) return;
+  const m = new THREE.Mesh(missileGeo, enemyMissileMat);
+  m.position.copy(origin);
+  const dir = tv3.copy(target.obj.position).sub(origin).normalize();
+  m.quaternion.setFromUnitVectors(zAxis, dir);
+  const flame = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: enemyMissileFlameTex, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  flame.scale.setScalar(2.2);
+  flame.position.z = -1.4;
+  m.add(flame);
+  scene.add(m);
+  missiles.push({
+    mesh: m, target, faction: 'enemy',
+    vel: dir.clone().multiplyScalar(80),
+    life: 9, turn: 1.7, maxSpeed: 150,
+  });
+  if (target.isPlayer) { message('MISSILE INBOUND — EVADE'); sfxMissile(); }
 }
 
 /* -------------------- cañones de las capitales -------------------- */
@@ -1239,7 +1358,7 @@ capitals.enemy.bar = el('enemyCapBar').firstElementChild;
 let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
-window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, fighters, swarm, ship, touchStick, player, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
+window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers, get kills() { return kills; }, get t() { return clockTime; }, get audio() { return audio; }, get flybyCool() { return flybyCool; }, get lock() { return { target: lockTarget, progress: lockProgress }; }, get missiles() { return missiles; }, get waveEnemyTotal() { return waveEnemyTotal; } };
 
 /* -------------------- radar 3D (estilo Elite) --------------------
    Proyección al espacio local de la nave: X lateral, Z adelante (arriba del
@@ -1301,16 +1420,16 @@ function drawMarkers() {
   mctx.clearRect(0, 0, markC.width, markC.height);
   if (!started || player.dead) return;
   mctx.lineWidth = 1.5;
-  const mark = (pos, big) => {
+  const mark = (pos, big, heavy) => {
     const d = pos.distanceTo(ship.position);
     // cerca gritan, lejos susurran: 92 hostiles con brackets a tope = muro de ruido
-    if (!big && (d > 2400 || d < 22)) return;
+    if (!big && (d > (heavy ? 3600 : 2400) || d < 22)) return;
     tmp.copy(pos).project(camera);
     if (tmp.z > 1 || Math.abs(tmp.x) > 1.05 || Math.abs(tmp.y) > 1.05) return;
     const sx = (tmp.x + 1) / 2 * markC.width;
     const sy = (1 - tmp.y) / 2 * markC.height;
-    const s = big ? 34 : THREE.MathUtils.clamp(6500 / d, 4, 26);
-    const alpha = big ? 0.8 : THREE.MathUtils.clamp(1.1 - d / 2400, 0.12, 0.85);
+    const s = big ? 34 : THREE.MathUtils.clamp((heavy ? 14000 : 6500) / d, heavy ? 9 : 4, heavy ? 40 : 26);
+    const alpha = big ? 0.8 : THREE.MathUtils.clamp(1.1 - d / (heavy ? 3600 : 2400), heavy ? 0.3 : 0.12, 0.9);
     mctx.strokeStyle = `rgba(255,90,60,${alpha})`;
     const c = s * 0.4;
     mctx.beginPath();
@@ -1319,15 +1438,15 @@ function drawMarkers() {
     mctx.moveTo(sx + s, sy + s - c); mctx.lineTo(sx + s, sy + s); mctx.lineTo(sx + s - c, sy + s);
     mctx.moveTo(sx - s + c, sy + s); mctx.lineTo(sx - s, sy + s); mctx.lineTo(sx - s, sy + s - c);
     mctx.stroke();
-    if (big) {
+    if (big || heavy) {
       mctx.fillStyle = `rgba(255,140,100,${alpha})`;
       mctx.font = '10px monospace';
       mctx.textAlign = 'center';
-      mctx.fillText('CAPITAL', sx, sy - s - 6);
+      mctx.fillText(big ? 'CAPITAL' : 'GUNSHIP', sx, sy - s - 6);
     }
   };
   for (const f of fighters) if (f.alive && f.faction === 'enemy') mark(f.obj.position, false);
-  for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false);
+  for (const s of swarm) if (s.alive && s.faction === 'enemy') mark(s.obj.position, false, s.isGunship);
   if (capitals.enemy.alive) mark(capitals.enemy.group.position, true);
 
   /* fijación de misil: anillo de carga en la mira + rombo sobre el objetivo */
@@ -1626,22 +1745,53 @@ function update(dt) {
       const toT = tmp.copy(s.target.obj.position).sub(s.obj.position);
       const dist = toT.length();
       toT.normalize();
+      const orbitAt = s.isGunship ? 170 : 90; // la cañonera se queda a distancia y castiga
       const desired = tmp2.copy(toT);
-      if (dist < 90) desired.crossVectors(toT, s.obj.up).multiplyScalar(s.orbitDir).addScaledVector(toT, 0.2);
+      if (dist < orbitAt) desired.crossVectors(toT, s.obj.up).multiplyScalar(s.orbitDir).addScaledVector(toT, 0.2);
       // serpenteo individual del enjambre — el cielo se llena de curvas
       tv1.crossVectors(toT, s.obj.up).normalize();
       const wv = Math.sin(t * s.weaveF + s.weavePh) * s.weaveAmp;
       desired.addScaledVector(tv1, wv);
       desired.y += Math.cos(t * s.weaveF * 0.7 + s.weavePh) * s.weaveAmp * 0.5;
-      s.vel.addScaledVector(desired.normalize(), 24 * dt);
+      s.vel.addScaledVector(desired.normalize(), (s.isGunship ? 13 : 24) * dt);
       s.vel.multiplyScalar(Math.exp(-0.5 * dt));
-      if (s.vel.length() > 42) s.vel.setLength(42);
+      const topSpeed = s.isGunship ? 25 : 42;
+      if (s.vel.length() > topSpeed) s.vel.setLength(topSpeed);
       s.obj.position.addScaledVector(s.vel, dt);
       lookM.lookAt(s.obj.position, s.target.obj.position, s.obj.up);
       lookQ.setFromRotationMatrix(lookM);
-      bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < 90 ? s.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
+      bankQ.setFromAxisAngle(zAxis, THREE.MathUtils.clamp(-(wv + (dist < orbitAt ? s.orbitDir * 0.5 : 0)) * 1.1, -1, 1));
       lookQ.multiply(bankQ);
-      s.obj.quaternion.slerp(lookQ, 1 - Math.exp(-2.5 * dt));
+      s.obj.quaternion.slerp(lookQ, 1 - Math.exp((s.isGunship ? -1.4 : -2.5) * dt));
+
+      /* ---- CAÑONERA: 4 cañones en ráfaga + misiles guiados ---- */
+      if (s.isGunship) {
+        s.burstCool -= dt;
+        s.nextShot -= dt;
+        if (s.burst <= 0 && s.nextShot <= 0 && dist < 620) {
+          s.burst = 4;              // una salva por cañón
+          s.nextShot = 3.4 + Math.random() * 2.6;
+        }
+        if (s.burst > 0 && s.burstCool <= 0) {
+          const mz = GUN_MUZZLES[4 - s.burst];
+          tv2.set(mz[0], mz[1], mz[2]).applyQuaternion(s.obj.quaternion).add(s.obj.position);
+          const dir = tv3.copy(s.target.obj.position).sub(tv2).normalize();
+          dir.x += (Math.random() - 0.5) * enemySpread * 0.7; // más certera que un caza
+          dir.y += (Math.random() - 0.5) * enemySpread * 0.7;
+          fireLaser(tv2.clone(), dir.normalize().clone(), 260, 'enemy');
+          flash(tv2, true, 2.5, 0.08);
+          s.burst--;
+          s.burstCool = 0.12;
+        }
+        s.nextMissile -= dt;
+        if (s.nextMissile <= 0 && dist < 900) {
+          s.nextMissile = 11 + Math.random() * 9;
+          const pod = GUN_PODS[Math.random() < 0.5 ? 0 : 1];
+          tv2.set(pod[0], pod[1], pod[2]).applyQuaternion(s.obj.quaternion).add(s.obj.position);
+          launchEnemyMissile(tv2, s.target);
+        }
+        continue; // no usa el disparo genérico del enjambre
+      }
 
       s.nextShot -= dt;
       if (s.nextShot <= 0 && dist < 260) {
@@ -1762,8 +1912,8 @@ function update(dt) {
     if (hasTarget) {
       // persecución con giro limitado: alcanzable, pero esquivable
       tmp.copy(ms.target.obj.position).sub(ms.mesh.position).normalize();
-      const speed = Math.min(240, ms.vel.length() + 130 * dt); // más rápido que tu turbo: no te adelantas a tu propio misil
-      ms.vel.lerp(tmp.multiplyScalar(speed), 1 - Math.exp(-3.2 * dt)); // giro firme: alcanza incluso a un caza serpenteando
+      const speed = Math.min(ms.maxSpeed || 240, ms.vel.length() + 130 * dt); // más rápido que tu turbo: no te adelantas a tu propio misil
+      ms.vel.lerp(tmp.multiplyScalar(speed), 1 - Math.exp(-(ms.turn || 3.2) * dt)); // giro firme: alcanza incluso a un caza serpenteando
       ms.mesh.quaternion.setFromUnitVectors(tmp.set(0, 0, 1), tmp2.copy(ms.vel).normalize());
     }
     ms.mesh.position.addScaledVector(ms.vel, dt);
@@ -1772,7 +1922,14 @@ function update(dt) {
 
     if (!done && hasTarget && !ms.target.isCapital
         && ms.mesh.position.distanceToSquared(ms.target.obj.position) < 14 * 14) {
-      missileHit(ms.target, ms.mesh.position); // un misil, una baja — élite o enjambre
+      if (ms.faction === 'enemy') {
+        // misil de cañonera: si te alcanza, duele de verdad
+        if (ms.target.isPlayer) damagePlayer(48);
+        else if (ms.target.slot !== undefined) killSwarmShip(ms.target, false);
+        else damageFighter(ms.target, 6, ms.mesh.position);
+      } else {
+        missileHit(ms.target, ms.mesh.position); // un misil, una baja — élite o enjambre
+      }
       flash(ms.mesh.position, true, 14, 0.35);
       sfxExplosion(1.6, gainFor(ms.mesh.position, 1600));
       done = true;
@@ -1780,8 +1937,8 @@ function update(dt) {
     if (!done) {
       for (const c of colliders) {
         if (ms.mesh.position.distanceToSquared(c.pos) < c.r * c.r) {
-          // cabezazo contra una capital enemiga: daño pesado de misil
-          if (c.cap && c.cap.alive && c.cap.faction === 'enemy') damageCapital(c.cap, 150, ms.mesh.position);
+          // cabezazo contra una capital rival: daño pesado de misil
+          if (c.cap && c.cap.alive && c.cap.faction !== ms.faction) damageCapital(c.cap, 150, ms.mesh.position);
           flash(ms.mesh.position, true, 12, 0.3);
           done = true; break;
         }
@@ -1816,7 +1973,7 @@ function update(dt) {
       const hitR = l.isPlayer ? 8 : 5;
       for (const s of swarm) {
         if (!s.alive || s.faction === l.faction) continue;
-        if (segmentHitsSphere(segPrev, segStep, s.obj.position, hitR)) {
+        if (segmentHitsSphere(segPrev, segStep, s.obj.position, s.isGunship ? 13 : hitR)) {
           s.hp--;
           if (s.hp <= 0) killSwarmShip(s, l.isPlayer);
           else flash(l.mesh.position, false, 5, 0.15);
