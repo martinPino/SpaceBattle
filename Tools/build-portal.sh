@@ -95,20 +95,20 @@ p = sys.argv[1]
 s = open(p).read()
 s = s.replace("import Peer from 'https://esm.sh/peerjs@1.5.4';",
               "import Peer from './vendor/peerjs.js';")
-# el relé y el tablón de salas se piden al endpoint de Vercel, que es quien
-# guarda el secreto; en el portal esas rutas no existen
+# el relé se pide al endpoint de Vercel, que es quien guarda el secreto; en el
+# portal esa ruta no existe. (ROOMS_API ya es absoluta: apunta al Worker.)
 s = s.replace("const TURN_API = '/api/turn';",
               "const TURN_API = 'https://space-battle-sand.vercel.app/api/turn';")
-s = s.replace("const ROOMS_API = '/api/rooms';",
-              "const ROOMS_API = 'https://space-battle-sand.vercel.app/api/rooms';")
 # fuera las claves de Metered: no deben viajar en un paquete que se distribuye
 s = re.sub(r"const METERED_APP = '[^']*';", "const METERED_APP = '';", s)
 s = re.sub(r"const METERED_KEY = '[^']*';", "const METERED_KEY = '';", s)
 s = re.sub(r"const FREE_TURN = \[[^\]]*\];", "const FREE_TURN = [];", s, flags=re.S)
-for needed in ("space-battle-sand.vercel.app/api/turn", "space-battle-sand.vercel.app/api/rooms"):
-    assert needed in s, f"no se reescribió {needed}"   # que no pase inadvertido
+assert "space-battle-sand.vercel.app/api/turn" in s, "no se reescribió TURN_API"
+assert "/api/rooms" not in s, "ROOMS_API quedó relativa: en un portal no resolvería"
+assert "workers.dev/rooms" in s, "ROOMS_API no apunta al Worker del tablón"
+assert "SUBDOMINIO" not in s, "falta desplegar el Worker: ROOMS_API sigue con el marcador"
 open(p, 'w').write(s)
-print('  net.js: relé y salas por tu endpoint, sin credenciales en el paquete')
+print('  net.js: relé por tu endpoint y salas por el Worker, sin credenciales dentro')
 PY
 mkdir -p "$OUT/Tools/viewer"
 cp "$ROOT/Tools/viewer/"*.js "$OUT/Tools/viewer/"

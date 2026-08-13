@@ -44,6 +44,14 @@ This started as a Unity project and grew a browser version, plus the asset pipel
 | `Tools/Blender/` | Procedural asset pipeline — Python scripts that generate every ship, planet, asteroid and skybox in Blender |
 | `Tools/viewer/` | three.js mirror of the pipeline: the same models, built in the browser |
 | `Assets/ThirdParty/` | CC0 assets with their licenses documented |
+| `cf-rooms/` | Cloudflare Worker: the public-rooms board for multiplayer |
+| `api/` | Vercel function that mints short-lived TURN credentials |
+
+### Multiplayer without a game server
+
+Matches are peer-to-peer over WebRTC — the host relays, and nothing runs on a server. That leaves one hole: with no server, there is nobody to ask who is currently playing. `cf-rooms/` fills it with a noticeboard that forgets. Hosts announce themselves every 30 seconds, entries expire after 90, and the whole registry is one Durable Object holding one key.
+
+The intervals are not arbitrary. Cloudflare's free plan allows ~100,000 requests a day across the Worker and the object together, and a heartbeat every 15 seconds would spend it on twenty rooms alone. Reads are served from an 8-second edge cache that is invalidated the moment a room appears or disappears, so browsing is nearly free while the list still reacts instantly to what matters.
 
 ### The models are code
 
@@ -62,6 +70,12 @@ python3 -m http.server 8788 -d /path/to/SpaceBattle
 ```
 
 Then open `http://127.0.0.1:8788/Web/index.html`.
+
+The public-rooms board runs on its own, and the game degrades gracefully without it — hosting by link and joining by code keep working:
+
+```bash
+cd cf-rooms && npx wrangler login && ./deploy.sh
+```
 
 ### Regenerating the assets
 

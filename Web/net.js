@@ -75,61 +75,109 @@ let meteredIce = [];
 // En un portal el juego vive en otro dominio: el empaquetador reescribe esta
 // constante con la URL absoluta del endpoint, que sigue guardando el secreto.
 const TURN_API = '/api/turn';
-const ROOMS_API = '/api/rooms';
+// El tablón de salas vive en Cloudflare (cf-rooms/), donde ya está el relé TURN.
+// URL absoluta a propósito: el juego también corre en los portales, en otro dominio.
+const ROOMS_API = 'https://space-battle-rooms.SUBDOMINIO.workers.dev/rooms';
 
 /* ---------------- salas públicas ----------------
-   El anfitrión se anuncia cada 15 s mientras admita gente; el anuncio caduca
-   solo a los 40 s en el servidor, así que cerrar el navegador basta para
-   desaparecer de la lista. Si el directorio no está configurado o falla, todo
-   sigue funcionando por enlace de invitación. */
+   El anfitrión se anuncia cada 30 s mientras admita gente; el anuncio caduca
+   solo a los 90 s en el servidor, así que cerrar el navegador basta para
+   desaparecer de la lista, y perder un latido suelto no la tira. Si el tablón
+   no responde, todo sigue funcionando por enlace de invitación.
+
+   El ritmo no es casual: cada llamada consume del presupuesto diario gratuito
+   de Cloudflare, y a 15 s veinte salas se lo comían entero. */
+const BEAT_MS = 30000;
+const THROTTLE_MS = 10000;   // ráfagas de cambios en la sala no son ráfagas de avisos
 let announceTimer = null;
 let lastPost = 0;
+let pendingBeat = null;      // el último cambio no puede quedarse sin enviar
+let leaving = false;         // cerrando la sala: no volver a anunciarla
+// Prueba de que la sala es tuya. Sin esto, el id que sale en la lista pública
+// sería la única credencial y cualquiera podría borrarte del tablón.
+let roomSecret = null;
+// Número de orden: los avisos son fetch sueltos y pueden adelantarse entre sí.
+// Sin él, un latido lanzado justo antes de cerrar la sala llegaría después del
+// cierre y la resucitaría en el tablón hasta caducar.
+let roomSeq = 0;
+
 export async function listRooms() {
   try {
     const r = await fetch(ROOMS_API, { cache: 'no-store' });
+    if (!r.ok) return { rooms: [], disabled: true };   // 4xx/5xx traen JSON válido
     const j = await r.json();
-    return { rooms: j.rooms || [], disabled: !!j.disabled };
+    if (!Array.isArray(j.rooms)) return { rooms: [], disabled: true };
+    return { rooms: j.rooms, disabled: false };
   } catch { return { rooms: [], disabled: true }; }
 }
+/* text/plain a propósito: con application/json el navegador manda antes una
+   petición OPTIONS de sondeo, y esa también cuenta. El servidor lee el cuerpo
+   como JSON igualmente. */
 function postRoom(body) {
   return fetch(ROOMS_API, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body),
   }).catch(() => {});
 }
 /* Se llama al abrir sala y cada vez que cambia la lista de pilotos, para que el
    contador de la lista no vaya por detrás. El acelerador evita que una racha de
    entradas/salidas dispare una petición por cada una. */
 export function announceRoom(force = false) {
-  if (net.role !== 'host' || !net.id || !net.public || net.started) return;
+  if (leaving || net.role !== 'host' || !net.id || !net.public || net.started) return;
+  if (!roomSecret) roomSecret = (crypto.randomUUID?.() || String(Math.random())).slice(0, 32);
   const now = performance.now();
-  if (force || now - lastPost > 4000) {
+  const beat = () => {
     lastPost = now;
     postRoom({
-      id: net.id, name: net.players.get(net.self)?.name || 'PILOT',
+      id: net.id, secret: roomSecret, seq: ++roomSeq,
+      name: net.players.get(net.self)?.name || 'PILOT',
       players: net.players.size, max: 8, mode: net.mode,
     });
+  };
+  /* Un invitado tecleando su nombre dispara un aviso de sala por pulsación:
+     broadcastLobby() llama aquí en cada cambio. Se acelera a uno cada diez
+     segundos, pero el último cambio se manda igualmente al vencer el plazo —
+     si se descartara sin más, el recuento se quedaría mal hasta el siguiente
+     latido. */
+  if (force || now - lastPost > THROTTLE_MS) {
+    clearTimeout(pendingBeat); pendingBeat = null;
+    beat();
+  } else if (!pendingBeat) {
+    pendingBeat = setTimeout(() => { pendingBeat = null; announceRoom(true); },
+      THROTTLE_MS - (now - lastPost));
   }
   clearInterval(announceTimer);
-  announceTimer = setInterval(() => announceRoom(true), 15000);
+  announceTimer = setInterval(() => announceRoom(true), BEAT_MS);
 }
 export function unannounceRoom() {
   clearInterval(announceTimer);
+  clearTimeout(pendingBeat);
   announceTimer = null;
+  pendingBeat = null;
   lastPost = 0;
-  if (net.id && net.role === 'host') postRoom({ id: net.id, closed: true });
+  if (net.id && net.role === 'host') postRoom({ id: net.id, secret: roomSecret, seq: ++roomSeq, closed: true });
 }
 /* Cerrar la pestaña deja la sala colgando hasta que caduque; el aviso de salida
-   la retira al momento. `fetch` no sobrevive al cierre, sendBeacon sí. */
-addEventListener('pagehide', () => {
+   la retira al momento. `fetch` no sobrevive al cierre, sendBeacon sí.
+   `persisted` distingue el cierre real de un simple ir y volver con el botón
+   atrás: ahí la página sigue viva y la sala no debe desaparecer del tablón. */
+addEventListener('pagehide', (e) => {
+  if (e.persisted) return;
   if (net.role === 'host' && net.id && net.public) {
-    try { navigator.sendBeacon(ROOMS_API, new Blob([JSON.stringify({ id: net.id, closed: true })], { type: 'application/json' })); } catch { /* da igual: caduca sola */ }
+    try {
+      navigator.sendBeacon(ROOMS_API, new Blob(
+        [JSON.stringify({ id: net.id, secret: roomSecret, seq: ++roomSeq, closed: true })], { type: 'text/plain' }));
+    } catch { /* da igual: caduca sola */ }
   }
 });
+// al volver del historial los temporizadores vienen fríos: reanunciar ya
+addEventListener('pageshow', (e) => { if (e.persisted) announceRoom(true); });
 
 /* Pública, en la lista de todos; privada, solo por enlace. */
 export function setPublic(on) {
-  net.public = !!on;
-  if (net.public) announceRoom(true);
+  const v = !!on;
+  if (v === net.public) return;   // pulsar dos veces el mismo botón no es un aviso
+  net.public = v;
+  if (v) announceRoom(true);
   else unannounceRoom();
 }
 async function tryCloudflare() {
@@ -203,15 +251,33 @@ function newPeer() {
     // "presentación" entre navegadores; el juego viaja directo entre ellos
     note('abriendo canal de señalización…');
     const p = new Peer({ debug: 1, config: iceConfig() });
-    const to = setTimeout(() => { note('señalización: sin respuesta en 15 s'); reject(new Error('signal-timeout')); }, 15000);
-    p.on('open', (id) => { clearTimeout(to); note('señalización lista'); resolve([p, id]); });
-    p.on('disconnected', () => { note('señalización caída; reconectando…'); try { p.reconnect(); } catch { /* ya destruido */ } });
+    let done = false;
+    /* Un intento fallido hay que destruirlo. Si solo se rechaza la promesa, el
+       par sigue vivo y fuera de alcance: mantiene su socket abierto, se
+       reconecta solo y sigue escribiendo errores en la sala de la sesión
+       siguiente. */
+    const fail = (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(to);
+      try { p.destroy(); } catch { /* ya cerrado */ }
+      reject(err);
+    };
+    const to = setTimeout(() => { note('señalización: sin respuesta en 15 s'); fail(new Error('signal-timeout')); }, 15000);
+    p.on('open', (id) => { done = true; clearTimeout(to); note('señalización lista'); resolve([p, id]); });
+    // OJO: destroy() emite 'disconnected' ANTES de marcarse como destruido, así
+    // que sin la guarda el reconnect() vuelve a abrir el socket que se estaba
+    // cerrando y deja el id de la sala ocupado en el servidor de señalización
+    p.on('disconnected', () => {
+      if (leaving) return;
+      note('señalización caída; reconectando…');
+      try { p.reconnect(); } catch { /* ya destruido */ }
+    });
     p.on('error', (e) => {
       note(`error de par: ${e.type}`);
       // 'peer-unavailable' = sala inexistente; el resto suelen ser de red
-      net.onError(e.type === 'peer-unavailable' ? 'Room not found — check the code' : `Network: ${e.type}`);
-      clearTimeout(to);
-      reject(e);
+      if (!leaving) net.onError(e.type === 'peer-unavailable' ? 'Room not found — check the code' : `Network: ${e.type}`);
+      fail(e);
     });
   });
 }
@@ -382,7 +448,8 @@ export async function joinGame(hostId, name) {
       net.onStart(d.seed);
     } else net.onMessage(hostId, d);
   });
-  conn.on('close', () => net.onError('Se perdió la conexión con el anfitrión'));
+  // al salir por tu propio pie no hay nada que avisar: el cierre lo has pedido tú
+  conn.on('close', () => { if (!leaving) net.onError('Lost the connection to the host'); });
   conn.send({ t: 'hello', name: cleanName(name), team: net.team, ship: net.ship });
   return id;
 }
@@ -416,6 +483,11 @@ export function sendTo(id, msg) {
 }
 
 export function leave() {
+  /* El orden importa. peer.destroy() cierra cada conexión, y cada cierre acaba
+     llamando a broadcastLobby() → announceRoom(): en ese instante el rol sigue
+     siendo 'host', así que la sala que se acaba de retirar se volvía a anunciar
+     y quedaba de fantasma en el tablón hasta caducar. La bandera corta eso. */
+  leaving = true;
   unannounceRoom();
   try { peer?.destroy(); } catch { /* ya cerrado */ }
   peer = null;
@@ -424,6 +496,9 @@ export function leave() {
   net.players.clear();
   net.hostConn = null;
   net.started = false;
+  roomSecret = null;
+  roomSeq = 0;
+  leaving = false;
 }
 
 /* --------------------- codificación binaria de la flota ---------------------

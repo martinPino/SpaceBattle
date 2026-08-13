@@ -2262,8 +2262,13 @@ function wireLobby() {
   // visibilidad de la sala): sin esto el invitado los veía hasta que llegaba la
   // primera lista del anfitrión, y parecía que podía cambiarlos
   const show = (title, hint, link, asHost) => {
+    // se puede llegar a la sala sin pasar por BACK (enlace ?room=, invitación de
+    // CrazyGames): si no se cierra aquí, la lista pública se queda sondeando
+    // por debajo durante toda la partida
+    closeRooms();
     el('lobbyTitle').textContent = title;
     el('lobbyHint').textContent = hint;
+    el('lobbyStatus').textContent = '';   // no arrastrar el error de la sesión anterior
     el('linkRow').classList.toggle('hidden', !link);
     el('modeRow').style.display = asHost ? 'flex' : 'none';
     el('privacyRow').style.display = asHost ? 'flex' : 'none';
@@ -2389,18 +2394,29 @@ function wireLobby() {
       }).join('')
       : '<li class="empty">— NO OPEN ROOMS —</li>';
   }
-  const closeRooms = () => {
+  // declarada como función, no como const: `show()` la usa y está definida antes
+  function closeRooms() {
     clearInterval(roomsTimer); roomsTimer = null;
     el('rooms').classList.add('hidden');
+  }
+  const roomsOpen = () => !el('rooms').classList.contains('hidden');
+  const pollRooms = () => {
+    clearInterval(roomsTimer);
+    roomsTimer = setInterval(paintRooms, 12000);
   };
   el('browseBtn').onclick = () => {
     el('rooms').classList.remove('hidden');
     document.getElementById('start').classList.add('hidden');
     el('roomList').innerHTML = '<li class="empty">— SCANNING —</li>';
     paintRooms();
-    clearInterval(roomsTimer);
-    roomsTimer = setInterval(paintRooms, 10000);
+    pollRooms();
   };
+  // una pestaña olvidada en segundo plano no tiene por qué seguir preguntando
+  document.addEventListener('visibilitychange', () => {
+    if (!roomsOpen()) return;
+    if (document.hidden) { clearInterval(roomsTimer); roomsTimer = null; }
+    else { paintRooms(); pollRooms(); }
+  });
   el('roomsRefresh').onclick = paintRooms;
   el('roomsBack').onclick = () => {
     closeRooms();
@@ -2517,6 +2533,11 @@ function wireLobby() {
   };
 
   async function joinRoom(id) {
+    /* Se puede llegar aquí ya siendo anfitrión: CrazyGames avisa de una
+       invitación en cualquier momento. Sin cerrar antes lo propio, la sala
+       anterior seguiría anunciada y su par seguiría aceptando gente que
+       aterrizaría en una partida que ya no existe. */
+    if (net.role !== 'solo') netLeave();
     show('JOINING', 'Connecting to the host…', false, false);
     try { await joinGame(id, nameOf()); lobbyRefresh(); }
     catch { el('lobbyStatus').textContent = 'Could not join that room'; }
