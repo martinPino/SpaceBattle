@@ -9,12 +9,16 @@
   "observability": { "enabled": true },
 
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "RoomRegistry" }]
+    "bindings": [
+      { "name": "ROOMS", "class_name": "RoomRegistry" },
+      { "name": "STATS", "class_name": "Stats" }
+    ]
   },
   // `storage: sqlite` es obligatorio en el plan gratuito. Este bloque declarativo
   // sustituye al array `migrations` de los tutoriales antiguos, y son excluyentes.
   // El namespace lo crea Cloudflare en el primer deploy: no hay comando que dar.
   "exports": {
-    "RoomRegistry": { "type": "durable-object", "storage": "sqlite" }
+    "RoomRegistry": { "type": "durable-object", "storage": "sqlite" },
+    "Stats": { "type": "durable-object", "storage": "sqlite" }
   }
 }

@@ -55,7 +55,7 @@ print(f"  {n} archivos de three.js incluidos")
 PY
 
 # --- código del juego y modelos propios ---
-cp "$ROOT/Web/game.js" "$ROOT/Web/net.js" "$ROOT/Web/crazygames.js" "$OUT/"
+cp "$ROOT/Web/game.js" "$ROOT/Web/net.js" "$ROOT/Web/crazygames.js" "$ROOT/Web/stats.js" "$OUT/"
 
 # El multijugador SÍ viaja al portal, pero sin regalar nada: PeerJS se incluye
 # dentro (nada de CDN de terceros) y el relé se pide a tu endpoint de Vercel por

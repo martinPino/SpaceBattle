@@ -63,11 +63,21 @@ const clamp = (v, lo, hi, def) => {
   return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def;
 };
 
+export { Stats } from './stats.js';
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     const url = new URL(request.url);
+    // contador de jugadores: objeto aparte, sin nada que ver con las salas
+    if (url.pathname === '/stat' || url.pathname === '/stats' || url.pathname === '/panel') {
+      if (url.pathname === '/stat' && request.method !== 'POST') return json({ error: 'method' }, 405);
+      const len = parseInt(request.headers.get('Content-Length') || '0', 10);
+      if (len > 1024) return json({ error: 'too-big' }, 413);
+      return env.STATS.get(env.STATS.idFromName('global')).fetch(request);
+    }
+
     if (url.pathname !== '/rooms' && url.pathname !== '/') return json({ error: 'not-found' }, 404);
     if (request.method !== 'GET' && request.method !== 'POST') return json({ error: 'method' }, 405);
 

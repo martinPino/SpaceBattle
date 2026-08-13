@@ -13,6 +13,7 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { onCrazyGames, cgInit, cgStartupRoom, cgRoomOpen, cgRoomClosed, cgRoomLeft, cgInviteLink,
   cgLoaded, cgPlaying, cgCelebrate } from './crazygames.js';
+import { stat } from './stats.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   setName, setTeam, setMode, setShip, sendTo, iceConfig, getTurn, setTurn, refreshTurn,
   listRooms, announceRoom, setPublic,
@@ -562,6 +563,7 @@ function lockPointer() {
 }
 document.getElementById('startBtn').onclick = () => {
   document.getElementById('start').classList.add('hidden');
+  stat('play');
   enterAudio(); // el gesto del usuario desbloquea el audio del navegador
   lockLandscape();
   lockPointer();
@@ -1553,6 +1555,7 @@ function respawnEnemyCapital() {
 }
 function startNextWave() {
   wave++;
+  if (wave === 2) stat('wave2');   // cuántos pasan de la primera oleada
   enemySpread = Math.max(0.07, 0.14 - 0.02 * (wave - 1));
   el('waveNum').textContent = wave;
   kills = 0;
@@ -2239,6 +2242,7 @@ function lobbyRefresh() {
 
 function beginMultiplayer() {
   mpActive = true;
+  stat('play'); stat('mp');   // aquí no se pasa por ENTER COCKPIT
   document.body.classList.add('mp');
   el('lobby').classList.add('hidden');
   document.getElementById('start').classList.add('hidden');
@@ -2793,6 +2797,7 @@ function endGame(victory) {
   // en multijugador la muerte no acaba la partida: reapareces en tu capital
   if (mpActive && !victory) { respawnPlayer(); return; }
   player.dead = true;
+  if (victory) stat('win');
   // iOS/Safari móvil NO tiene Pointer Lock: llamarla a pelo rompía endGame
   // entero (sin explosión y sin pantalla final — el bug reportado)
   if (document.exitPointerLock) document.exitPointerLock();
