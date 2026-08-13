@@ -73,8 +73,12 @@ export default {
     // contador de jugadores: objeto aparte, sin nada que ver con las salas
     if (url.pathname === '/stat' || url.pathname === '/stats' || url.pathname === '/panel') {
       if (url.pathname === '/stat' && request.method !== 'POST') return json({ error: 'method' }, 405);
-      const len = parseInt(request.headers.get('Content-Length') || '0', 10);
-      if (len > 1024) return json({ error: 'too-big' }, 413);
+      // sin Content-Length (codificación troceada) el tope no se puede
+      // comprobar, así que se exige la cabecera: el juego siempre la manda
+      if (request.method === 'POST') {
+        const len = parseInt(request.headers.get('Content-Length') || '-1', 10);
+        if (len < 0 || len > 1024) return json({ error: 'too-big' }, 413);
+      }
       return env.STATS.get(env.STATS.idFromName('global')).fetch(request);
     }
 

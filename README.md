@@ -53,6 +53,14 @@ Matches are peer-to-peer over WebRTC — the host relays, and nothing runs on a 
 
 The intervals are not arbitrary. Cloudflare's free plan allows ~100,000 requests a day across the Worker and the object together, and a heartbeat every 15 seconds would spend it on twenty rooms alone. Reads are served from an 8-second edge cache that is invalidated the moment a room appears or disappears, so browsing is nearly free while the list still reacts instantly to what matters.
 
+### Counting players without tracking them
+
+The same Worker counts how many people actually play — a question neither Vercel Analytics (which counts page opens, and doesn't ship in the portal builds) nor CrazyGames (which only sees its own site) can answer on its own.
+
+Telling one player from another normally means storing something on their device. This doesn't: the server hashes `IP + user agent + a salt that is thrown away every night`, keeps eight bytes of that, and forgets the address. Yesterday's fingerprints can't be compared against today's, so they can only do one thing — avoid counting the same person twice within a day. Nothing is written to the player's browser, which is exactly what would otherwise require a consent banner.
+
+The counters live at `/panel`.
+
 ### The models are code
 
 There are almost no model files in this repository. Ships, planets, asteroids and nebulae are all *generated* — the Blender scripts export FBX/GLB for Unity, and `Tools/viewer/space-kit-models.js` builds the same geometry directly in the browser from the same recipes. That's why the browser game ships as ~190 KB of JavaScript: the fleet is written, not stored.
