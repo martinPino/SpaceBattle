@@ -693,9 +693,22 @@ function disarmAudioUnlock() {
   for (const ev of UNLOCK_EVENTS) removeEventListener(ev, onUnlockGesture, { capture: true });
 }
 function resumeAudio() {
+  // La música empieza ya en el menú, no al entrar en cabina. No puede sonar
+  // antes: sin un gesto del usuario el navegador no deja crear audio. Así que
+  // el primer toque en cualquier sitio —elegir nave, un botón, una tecla— la
+  // arranca, y el resto del sistema (esperar a que baje la pista, recuperarse
+  // de una interrupción) ya funcionaba colgado de esta misma bandera.
+  audioWanted = true;
   initAudio();
   if (!audio) return;
-  if (audio.ctx.state === 'running') { disarmAudioUnlock(); return; }
+  if (audio.ctx.state === 'running') {
+    disarmAudioUnlock();
+    if (!audio.musicTrack && !audio.music) {   // ya sonaba el contexto: engancha la música
+      if (audio.musicTrackBuf) startUserMusic();
+      else if (musicFailed) startMusic();
+    }
+    return;
+  }
   armAudioUnlock(); // si este intento no cuaja, lo reintenta el próximo gesto
   const p = audio.ctx.resume();
   if (p && p.catch) p.catch(() => { /* hará falta otro gesto */ });
@@ -1445,6 +1458,10 @@ function registerEnemyKill() {
 // el misil pega MUCHO más que el láser: un caza, del impacto; la capital, 150 al casco
 function missileHit(target, pos) {
   if (target.isCapital) return; // el golpe al casco lo resuelven sus esferas de colisión
+  if (target.isPilot) {         // otro jugador: duele, pero no lo borra de un golpe
+    netHitPilot(target, 60);    // rompe el escudo y muerde el casco; dos misiles matan
+    return;
+  }
   if (target.isGunship) {       // blindada: hacen falta dos misiles (o 14 láseres)
     target.hp -= 8;
     if (target.hp <= 0) killSwarmShip(target, true);
@@ -1568,6 +1585,11 @@ function lockCandidateOk(e, coneDeg, maxDist) {
 function updateLock(dt) {
   if (player.dead || !started) { lockTarget = null; lockProgress = 0; lockAnnounced = false; return; }
   // el objetivo actual conserva la fijación mientras siga en el cono (con gracia corta)
+  // el bando puede cambiar con la fijación ya hecha (alguien se cambia de equipo,
+  // o el anfitrión pasa a modo equipos): hay que revalidarlo, no solo el cono
+  if (lockTarget && lockTarget.isPilot && isFriendly(lockTarget.id)) {
+    lockTarget = null; lockProgress = 0; lockAnnounced = false;
+  }
   if (lockTarget && lockTarget.alive
       && lockCandidateOk(lockTarget, lockTarget.isCapital ? 18 : 14, lockTarget.isCapital ? 3200 : 1600)) {
     lockGrace = 0.45;
@@ -1594,6 +1616,8 @@ function updateLock(dt) {
   };
   for (const f of fighters) if (f.alive && f.faction === 'enemy') consider(f, 1600);
   for (const s of swarm) if (s.alive && s.faction === 'enemy') consider(s, 1600);
+  // otros jugadores: fijables como cualquier enemigo (en equipos, los tuyos no)
+  for (const rp of remotePilots) if (rp.alive && !isFriendly(rp.id)) consider(rp, 1600);
   if (!best && capitals.enemy.alive && lockCandidateOk(enemyCapEntity, 18, 3200)) best = enemyCapEntity;
   if (best) { lockTarget = best; lockProgress = dt / LOCK_TIME; lockGrace = 0.45; lockAnnounced = false; }
 }
