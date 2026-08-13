@@ -71,9 +71,12 @@ let meteredIce = [];
         acuñadas en el servidor (el token nunca baja al navegador).
      2. Metered con la clave del usuario — 20 GB gratis.
      3. Credenciales estáticas de reserva, por si ninguna API responde. */
+// En un portal el juego vive en otro dominio: el empaquetador reescribe esta
+// constante con la URL absoluta del endpoint, que sigue guardando el secreto.
+const TURN_API = '/api/turn';
 async function tryCloudflare() {
   try {
-    const r = await fetch('/api/turn');
+    const r = await fetch(TURN_API);
     if (!r.ok) return false;                    // 501 = aún sin configurar
     const j = await r.json();
     const list = (j.iceServers || []).filter((s) => s && s.urls);

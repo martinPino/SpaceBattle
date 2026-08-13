@@ -23,6 +23,14 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.3;
 document.body.appendChild(renderer.domElement);
 
+/* ===================== VERSIÓN LIMPIA =====================
+   Un solo código, dos entradas. portal.html declara window.SB_CLEAN y entonces
+   el juego no carga ni una muestra de sonido ni el caza del enjambre ajenos:
+   usa el motor de audio sintetizado y el caza procedural del kit, que son
+   originales y por tanto publicables y monetizables en cualquier portal.
+   index.html no declara nada y se queda con la versión completa. */
+const CLEAN_BUILD = !!window.SB_CLEAN;
+
 /* ===================== PANTALLA DE CARGA =====================
    Hasta ahora el menú aparecía al instante y el botón de empezar podía
    pulsarse con la mitad de los modelos aún viajando por la red: la partida
@@ -774,6 +782,14 @@ function initAudio() {
     .then((buf) => ctx.decodeAudioData(buf))
     .then((decoded) => { audio[key] = decoded; onOk && onOk(); })
     .catch(() => { onFail && onFail(); });
+  if (CLEAN_BUILD) {
+    // versión para portales: nada de muestras ajenas. Suena el motor de audio
+    // sintetizado que ya existe —blaster, explosiones, alarma— y la banda
+    // sonora generativa, que es 100% de la casa
+    musicFailed = true;
+    if (audioWanted) startMusic();
+    return;
+  }
   loadSample('./assets/blaster-fire.mp3', 'laserBuf');
   loadSample('./assets/ship-explode.mp3', 'explodeBuf');
   loadSample('./assets/shield-down.mp3', 'shieldBuf');
@@ -1269,8 +1285,8 @@ function replaceSwarmBatch(faction, source) {
     }
   }
 }
-const swarmDone = loadJob('swarm fighters…');
-new GLTFLoader().load('./assets/ships/swarm-starflyer.glb', (g) => {
+const swarmDone = CLEAN_BUILD ? null : loadJob('swarm fighters…');
+if (!CLEAN_BUILD) new GLTFLoader().load('./assets/ships/swarm-starflyer.glb', (g) => {
   replaceSwarmBatch('ally', g.scene);
   replaceSwarmBatch('enemy', g.scene);
   swarmDone();

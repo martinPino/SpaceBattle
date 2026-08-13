@@ -11,6 +11,12 @@
 
    Sin ellas responde 501 y el juego usa el relé de reserva. */
 export default async function handler(req, res) {
+  // La versión publicada en portales corre en OTRO dominio y pide aquí sus
+  // credenciales: sin estas cabeceras el navegador bloquearía la petición.
+  // Solo se sirven credenciales temporales, nunca el secreto.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   const id = process.env.CF_TURN_KEY_ID;
   const token = process.env.CF_TURN_API_TOKEN;
   if (!id || !token) {
