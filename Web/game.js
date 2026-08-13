@@ -15,6 +15,7 @@ import { onCrazyGames, cgInit, cgStartupRoom, cgRoomOpen, cgRoomClosed, cgInvite
   cgLoaded, cgPlaying, cgCelebrate } from './crazygames.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   setName, setTeam, setMode, setShip, sendTo, iceConfig, getTurn, setTurn, refreshTurn,
+  listRooms, announceRoom, setPublic,
   writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
@@ -2225,8 +2226,9 @@ function lobbyRefresh() {
     ? `${n}/8 pilots · ${teams ? 'teams — no friendly fire' : 'free for all'}`
     : `${n}/8 pilots · ${teams ? 'teams' : 'free for all'} · waiting for the host`;
   el('lobbyGo').textContent = net.role === 'host' ? 'LAUNCH' : (net.players.get(net.self)?.ready ? 'NOT READY' : 'READY');
-  // el modo lo elige el anfitrión; el bando, cada uno
+  // el modo y la visibilidad los elige el anfitrión; el bando, cada uno
   el('modeRow').style.display = net.role === 'host' ? 'flex' : 'none';
+  el('privacyRow').style.display = net.role === 'host' ? 'flex' : 'none';
   el('modeFfa').classList.toggle('on', !teams);
   el('modeTeams').classList.toggle('on', teams);
   el('teamRow').classList.toggle('hidden', !teams);
@@ -2256,10 +2258,15 @@ function beginMultiplayer() {
 }
 
 function wireLobby() {
-  const show = (title, hint, link) => {
+  // `asHost` decide los mandos que solo tiene el anfitrión (modo de partida y
+  // visibilidad de la sala): sin esto el invitado los veía hasta que llegaba la
+  // primera lista del anfitrión, y parecía que podía cambiarlos
+  const show = (title, hint, link, asHost) => {
     el('lobbyTitle').textContent = title;
     el('lobbyHint').textContent = hint;
     el('linkRow').classList.toggle('hidden', !link);
+    el('modeRow').style.display = asHost ? 'flex' : 'none';
+    el('privacyRow').style.display = asHost ? 'flex' : 'none';
     el('lobby').classList.remove('hidden');
     document.getElementById('start').classList.add('hidden');
   };
@@ -2336,7 +2343,7 @@ function wireLobby() {
   net.onError = (msg) => { el('lobbyStatus').textContent = msg; };
 
   el('hostBtn').onclick = async () => {
-    show('HOSTING', 'Share this link with your friends. Up to 8 pilots.', true);
+    show('HOSTING', 'Share this link with your friends. Up to 8 pilots.', true, true);
     try {
       const id = await hostGame(nameOf());
       // en CrazyGames el enlace debe ser el suyo: abre el juego en su web y
@@ -2345,6 +2352,7 @@ function wireLobby() {
       cgRoomOpen(id);
       el('linkBox').value = url;
       el('lobbyHint').textContent = 'Share this link. Keep THIS tab open — you are the host.';
+      announceRoom(true); // aparecer ya en PUBLIC GAMES, sin esperar al latido
       lobbyRefresh();
     } catch { el('lobbyStatus').textContent = 'Could not open the room'; }
   };
@@ -2352,6 +2360,69 @@ function wireLobby() {
     const room = prompt('Room code or link:');
     if (room) joinRoom(room.includes('room=') ? room.split('room=')[1].split(/[&#]/)[0] : room.trim());
   };
+
+  /* -------- salas públicas --------
+     P2P no tiene servidor de partida al que preguntar quién está jugando, así
+     que los anfitriones se anuncian en /api/rooms y aquí se lee ese tablón. Se
+     refresca solo cada 10 s mientras la pantalla está a la vista; al salir, el
+     temporizador se apaga para no llamar al servidor de fondo. */
+  let roomsTimer = null;
+  async function paintRooms() {
+    const list = el('roomList');
+    const { rooms, disabled } = await listRooms();
+    if (disabled) {
+      el('roomsHint').textContent = 'The public room list is not available right now — '
+        + 'you can still host and share the link, or join by code.';
+      list.innerHTML = '<li class="empty">— LIST OFFLINE —</li>';
+      return;
+    }
+    el('roomsHint').textContent = rooms.length
+      ? 'Open rooms waiting for pilots. Pick one to jump in.'
+      : 'No open rooms right now. Host one and your friends will see it here.';
+    list.innerHTML = rooms.length
+      ? rooms.map((r) => {
+        const full = r.players >= r.max;
+        return `<li class="${full ? 'full' : ''}" data-room="${r.id}">`
+          + `<span class="rname">${r.name}'S GAME</span>`
+          + `<span class="rmode">${r.mode === 'teams' ? 'TEAMS' : 'FREE FOR ALL'}</span>`
+          + `<span class="rcount">${r.players}/${r.max}</span></li>`;
+      }).join('')
+      : '<li class="empty">— NO OPEN ROOMS —</li>';
+  }
+  const closeRooms = () => {
+    clearInterval(roomsTimer); roomsTimer = null;
+    el('rooms').classList.add('hidden');
+  };
+  el('browseBtn').onclick = () => {
+    el('rooms').classList.remove('hidden');
+    document.getElementById('start').classList.add('hidden');
+    el('roomList').innerHTML = '<li class="empty">— SCANNING —</li>';
+    paintRooms();
+    clearInterval(roomsTimer);
+    roomsTimer = setInterval(paintRooms, 10000);
+  };
+  el('roomsRefresh').onclick = paintRooms;
+  el('roomsBack').onclick = () => {
+    closeRooms();
+    document.getElementById('start').classList.remove('hidden');
+  };
+  el('roomList').onclick = (e) => {
+    const li = e.target.closest('li[data-room]');
+    if (!li || li.classList.contains('full')) return;
+    closeRooms();
+    if (!el('nameBox').value) el('nameBox').value = 'PILOT ' + Math.floor(Math.random() * 90 + 10);
+    joinRoom(li.dataset.room);
+  };
+  const setPrivacy = (pub) => {
+    setPublic(pub);
+    el('roomPublic').classList.toggle('on', pub);
+    el('roomPrivate').classList.toggle('on', !pub);
+    el('lobbyHint').textContent = pub
+      ? 'Listed in PUBLIC GAMES — anyone can drop in. Keep THIS tab open.'
+      : 'Private: only this link gets people in. Keep THIS tab open.';
+  };
+  el('roomPublic').onclick = () => setPrivacy(true);
+  el('roomPrivate').onclick = () => setPrivacy(false);
   el('copyBtn').onclick = () => {
     el('linkBox').select();
     navigator.clipboard?.writeText(el('linkBox').value);
@@ -2446,7 +2517,7 @@ function wireLobby() {
   };
 
   async function joinRoom(id) {
-    show('JOINING', 'Connecting to the host…', false);
+    show('JOINING', 'Connecting to the host…', false, false);
     try { await joinGame(id, nameOf()); lobbyRefresh(); }
     catch { el('lobbyStatus').textContent = 'Could not join that room'; }
   }

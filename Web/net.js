@@ -24,6 +24,7 @@ export const net = {
   mode: 'ffa',         // 'ffa' | 'teams'
   team: 'blue',        // bando propio cuando mode === 'teams'
   ship: 'kit',         // casco elegido, para que los demás te vean como eres
+  public: true,        // la sala se anuncia en la lista pública mientras espera
   started: false,
   onLobby: () => {},
   onStart: () => {},
@@ -74,6 +75,63 @@ let meteredIce = [];
 // En un portal el juego vive en otro dominio: el empaquetador reescribe esta
 // constante con la URL absoluta del endpoint, que sigue guardando el secreto.
 const TURN_API = '/api/turn';
+const ROOMS_API = '/api/rooms';
+
+/* ---------------- salas públicas ----------------
+   El anfitrión se anuncia cada 15 s mientras admita gente; el anuncio caduca
+   solo a los 40 s en el servidor, así que cerrar el navegador basta para
+   desaparecer de la lista. Si el directorio no está configurado o falla, todo
+   sigue funcionando por enlace de invitación. */
+let announceTimer = null;
+let lastPost = 0;
+export async function listRooms() {
+  try {
+    const r = await fetch(ROOMS_API, { cache: 'no-store' });
+    const j = await r.json();
+    return { rooms: j.rooms || [], disabled: !!j.disabled };
+  } catch { return { rooms: [], disabled: true }; }
+}
+function postRoom(body) {
+  return fetch(ROOMS_API, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }).catch(() => {});
+}
+/* Se llama al abrir sala y cada vez que cambia la lista de pilotos, para que el
+   contador de la lista no vaya por detrás. El acelerador evita que una racha de
+   entradas/salidas dispare una petición por cada una. */
+export function announceRoom(force = false) {
+  if (net.role !== 'host' || !net.id || !net.public || net.started) return;
+  const now = performance.now();
+  if (force || now - lastPost > 4000) {
+    lastPost = now;
+    postRoom({
+      id: net.id, name: net.players.get(net.self)?.name || 'PILOT',
+      players: net.players.size, max: 8, mode: net.mode,
+    });
+  }
+  clearInterval(announceTimer);
+  announceTimer = setInterval(() => announceRoom(true), 15000);
+}
+export function unannounceRoom() {
+  clearInterval(announceTimer);
+  announceTimer = null;
+  lastPost = 0;
+  if (net.id && net.role === 'host') postRoom({ id: net.id, closed: true });
+}
+/* Cerrar la pestaña deja la sala colgando hasta que caduque; el aviso de salida
+   la retira al momento. `fetch` no sobrevive al cierre, sendBeacon sí. */
+addEventListener('pagehide', () => {
+  if (net.role === 'host' && net.id && net.public) {
+    try { navigator.sendBeacon(ROOMS_API, new Blob([JSON.stringify({ id: net.id, closed: true })], { type: 'application/json' })); } catch { /* da igual: caduca sola */ }
+  }
+});
+
+/* Pública, en la lista de todos; privada, solo por enlace. */
+export function setPublic(on) {
+  net.public = !!on;
+  if (net.public) announceRoom(true);
+  else unannounceRoom();
+}
 async function tryCloudflare() {
   try {
     const r = await fetch(TURN_API);
@@ -244,6 +302,7 @@ export function broadcastLobby() {
     team: p.team || 'blue', ship: p.ship || 'kit',
   }));
   send({ t: 'lobby', players: list, hostId: net.self, mode: net.mode });
+  announceRoom(); // el recuento de la lista pública sigue a los pilotos
   net.onLobby();
 }
 
@@ -278,6 +337,7 @@ export function setMode(mode) { // solo el anfitrión decide el tipo de partida
 export function startMatch(seed) {
   if (net.role !== 'host') return;
   net.started = true;
+  unannounceRoom(); // empezada la partida, fuera de la lista: ya no admite gente
   send({ t: 'start', seed });
   net.onStart(seed);
 }
@@ -356,6 +416,7 @@ export function sendTo(id, msg) {
 }
 
 export function leave() {
+  unannounceRoom();
   try { peer?.destroy(); } catch { /* ya cerrado */ }
   peer = null;
   net.role = 'solo';

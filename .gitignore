@@ -17,3 +17,6 @@
 
 # Claude local
 .claude/
+
+# paquetes generados por Tools/build-portal.sh
+dist/
