@@ -11,6 +11,8 @@ import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-text
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { onCrazyGames, cgInit, cgStartupRoom, cgRoomOpen, cgRoomClosed, cgInviteLink,
+  cgLoaded, cgPlaying, cgCelebrate } from './crazygames.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   setName, setTeam, setMode, setShip, sendTo, iceConfig, getTurn, setTurn, refreshTurn,
   writePos, readPos, writeQuat, readQuat } from './net.js';
@@ -64,6 +66,7 @@ function paintLoading() {
     setTimeout(() => {
       document.getElementById('loading').classList.add('hidden');
       document.getElementById('start').classList.remove('hidden');
+      cgLoaded();
     }, 120);
   }
 }
@@ -562,7 +565,16 @@ document.getElementById('startBtn').onclick = () => {
   lockLandscape();
   lockPointer();
   started = true;
+  cgPlaying(true);
 };
+
+/* silencio de la plataforma: manda sobre cualquier ajuste del juego, así que
+   se guarda aparte y se reaplica cada vez que el audio se recrea */
+let platformMuted = false;
+function setPlatformMute(v) {
+  platformMuted = !!v;
+  if (audio) audio.master.gain.value = platformMuted ? 0 : 0.9;
+}
 document.getElementById('nextWaveBtn').onclick = () => startNextWave();
 renderer.domElement.addEventListener('click', () => {
   if (started && !document.pointerLockElement) lockPointer();
@@ -750,7 +762,7 @@ function initAudio() {
   limiter.release.value = 0.25;
   limiter.connect(ctx.destination);
   const master = ctx.createGain();
-  master.gain.value = 0.9;
+  master.gain.value = platformMuted ? 0 : 0.9;
   master.connect(limiter);
   const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
   const nd = noiseBuf.getChannelData(0);
@@ -2237,6 +2249,8 @@ function beginMultiplayer() {
   lockLandscape();
   lockPointer();
   started = true;
+  cgPlaying(true);
+  cgRoomClosed(); // arrancada la partida ya no entra nadie: fuera el botón de invitar
   drawScore();
   message(`${net.players.size} PILOTS IN THE FIELD`);
 }
@@ -2325,7 +2339,10 @@ function wireLobby() {
     show('HOSTING', 'Share this link with your friends. Up to 8 pilots.', true);
     try {
       const id = await hostGame(nameOf());
-      const url = `${location.origin}${location.pathname}?room=${id}`;
+      // en CrazyGames el enlace debe ser el suyo: abre el juego en su web y
+      // además avisa a tus amigos de que tienes sala abierta
+      const url = cgInviteLink(id) || `${location.origin}${location.pathname}?room=${id}`;
+      cgRoomOpen(id);
       el('linkBox').value = url;
       el('lobbyHint').textContent = 'Share this link. Keep THIS tab open — you are the host.';
       lobbyRefresh();
@@ -2422,6 +2439,7 @@ function wireLobby() {
   el('teamBlue').onclick = () => pickTeam('blue');
   el('teamRed').onclick = () => pickTeam('red');
   el('lobbyBack').onclick = () => {
+    cgRoomClosed();
     netLeave();
     el('lobby').classList.add('hidden');
     document.getElementById('start').classList.remove('hidden');
@@ -2432,12 +2450,22 @@ function wireLobby() {
     try { await joinGame(id, nameOf()); lobbyRefresh(); }
     catch { el('lobbyStatus').textContent = 'Could not join that room'; }
   }
-  // enlace de invitación: ?room=<id>
+  /* Entrada automática a una sala, por tres vías:
+       · ?room=<id> — el enlace normal
+       · invitación de CrazyGames — un amigo te ha invitado
+       · instant multiplayer — eres líder de una party: te abren sala al vuelo
+     Las dos últimas son requisito suyo para aceptar un juego multijugador. */
+  const autoName = () => { el('nameBox').value = 'PILOT ' + Math.floor(Math.random() * 90 + 10); };
+  cgInit({
+    onJoinRoom: (id) => { autoName(); joinRoom(id); },     // te invitan en caliente
+    onMute: setPlatformMute,
+  }).then(() => {
+    const { room: cgRoom, instant } = cgStartupRoom();
+    if (cgRoom) { autoName(); joinRoom(cgRoom); return; }
+    if (instant) { autoName(); el('hostBtn').click(); }     // líder de party: sala directa
+  });
   const room = new URLSearchParams(location.search).get('room');
-  if (room) {
-    el('nameBox').value = 'PILOT ' + Math.floor(Math.random() * 90 + 10);
-    joinRoom(room);
-  }
+  if (room) { autoName(); joinRoom(room); }
 }
 
 /* ============================== HUD ============================== */
@@ -2677,6 +2705,8 @@ function endGame(victory) {
     sfxExplosion(2.2, 1);
     ship.visible = false;
   }
+  cgPlaying(false);          // la plataforma sabe que hubo pausa
+  if (victory) cgCelebrate();
   el('endTitle').textContent = victory ? 'VICTORY' : 'SHIP LOST';
   el('endText').innerHTML = victory
     ? `Wave ${wave} cleared — all ${waveEnemyTotal} enemy ships destroyed.<br>`

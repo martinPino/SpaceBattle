@@ -55,7 +55,7 @@ print(f"  {n} archivos de three.js incluidos")
 PY
 
 # --- código del juego y modelos propios ---
-cp "$ROOT/Web/game.js" "$ROOT/Web/net.js" "$OUT/"
+cp "$ROOT/Web/game.js" "$ROOT/Web/net.js" "$ROOT/Web/crazygames.js" "$OUT/"
 
 # El multijugador SÍ viaja al portal, pero sin regalar nada: PeerJS se incluye
 # dentro (nada de CDN de terceros) y el relé se pide a tu endpoint de Vercel por
@@ -142,4 +142,23 @@ PY
 
 mkdir -p "$ROOT/dist"
 ( cd "$OUT" && zip -qr "$ROOT/dist/space-battle-portal.zip" . )
-echo "✓ dist/space-battle-portal.zip  ($(du -h "$ROOT/dist/space-battle-portal.zip" | cut -f1))"
+echo "✓ dist/space-battle-portal.zip  ($(du -h "$ROOT/dist/space-battle-portal.zip" | cut -f1))  → itch.io"
+
+# --- variante para CrazyGames: la misma, más su SDK ---
+# Su SDK debe cargarse desde su dominio (lo exigen). El módulo crazygames.js no
+# hace nada si no lo encuentra, así que el paquete de itch.io queda intacto.
+CG="$ROOT/dist/crazygames"
+rm -rf "$CG" && cp -R "$OUT" "$CG"
+python3 - "$CG/index.html" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('<script type="importmap">',
+              '<!-- SDK de CrazyGames: debe cargarse antes que el juego -->\n'
+              '<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>\n'
+              '<script type="importmap">')
+open(p, 'w').write(s)
+print('  SDK de CrazyGames añadido')
+PY
+( cd "$CG" && zip -qr "$ROOT/dist/space-battle-crazygames.zip" . )
+echo "✓ dist/space-battle-crazygames.zip  ($(du -h "$ROOT/dist/space-battle-crazygames.zip" | cut -f1))  → CrazyGames"
