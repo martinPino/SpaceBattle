@@ -12,7 +12,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
-  setName, setTeam, setMode, setShip, iceConfig, getTurn, setTurn, refreshTurn,
+  setName, setTeam, setMode, setShip, sendTo, iceConfig, getTurn, setTurn, refreshTurn,
   writePos, readPos, writeQuat, readQuat } from './net.js';
 
 /* ============================== escenario ============================== */
@@ -1873,26 +1873,53 @@ function removeRemotePilot(id) {
    Solo posición: los cazas del enjambre se orientan en el invitado según su
    propio desplazamiento, que es hacia dónde vuelan igualmente. 8 bytes por nave
    en vez de los ~60 que costaría en JSON. */
-function encodeFleet() {
-  const alive = [];
-  for (let i = 0; i < swarm.length; i++) if (swarm[i].alive) alive.push(i);
+/* Instantánea POR JUGADOR. Mandar la flota entera a todo el mundo costaba el
+   92% del tráfico, y la mayoría son naves a kilómetros que ocupan dos píxeles.
+   Ahora:
+     · quién vive va en un mapa de bits (1 bit por nave): las bajas llegan
+       siempre y al instante, aunque no se mande su posición;
+     · las posiciones se priorizan por cercanía a ESE jugador — cerca en cada
+       envío, media distancia por turnos, y muy lejos ni se molesta.
+   El mapa de bits es imprescindible: antes "no venir en la lista" significaba
+   "ha muerto", y con envíos parciales eso mataría media flota. */
+const NEAR_R2 = 900 * 900, MID_R2 = 2500 * 2500;
+let farPhase = 0;
+function encodeFleetFor(eye) {
+  const bits = Math.ceil(swarm.length / 8);
+  const pos = [];
+  for (let i = 0; i < swarm.length; i++) {
+    const s = swarm[i];
+    if (!s.alive) continue;
+    const d2 = s.obj.position.distanceToSquared(eye);
+    if (d2 < NEAR_R2) pos.push(i);                       // a la vista: siempre
+    else if (d2 < MID_R2 && (i & 3) === farPhase) pos.push(i); // por turnos
+  }
   const heroes = [];
   for (let i = 0; i < fighters.length; i++) if (fighters[i].alive) heroes.push(i);
-  const buf = new ArrayBuffer(9 + alive.length * 8 + 2 + heroes.length * 15 + 12);
+  const buf = new ArrayBuffer(7 + bits + 2 + pos.length * 8 + 1 + heroes.length * 7 + 11);
   const v = new DataView(buf);
   let o = 0;
-  v.setUint8(o, 1); o += 1;                       // tipo: instantánea de flota
-  v.setUint32(o, snapSeq++, true); o += 4;
-  v.setUint16(o, alive.length, true); o += 2;
-  for (const i of alive) {
+  v.setUint8(o, 2); o += 1;                       // formato 2
+  v.setUint32(o, snapSeq, true); o += 4;
+  v.setUint16(o, swarm.length, true); o += 2;
+  for (let b = 0; b < bits; b++) {                // vivos/muertos
+    let byte = 0;
+    for (let k = 0; k < 8; k++) {
+      const i = b * 8 + k;
+      if (i < swarm.length && swarm[i].alive) byte |= 1 << k;
+    }
+    v.setUint8(o + b, byte);
+  }
+  o += bits;
+  v.setUint16(o, pos.length, true); o += 2;
+  for (const i of pos) {
     v.setUint16(o, i, true); o += 2;
     o = writePos(v, o, swarm[i].obj.position);
   }
-  v.setUint16(o, heroes.length, true); o += 2;
-  for (const i of heroes) {
-    v.setUint8(o, i); o += 1;
+  v.setUint8(o, heroes.length); o += 1;
+  for (const i of heroes) {                        // sin cuaternión: el invitado
+    v.setUint8(o, i); o += 1;                      // los orienta por su avance
     o = writePos(v, o, fighters[i].obj.position);
-    o = writeQuat(v, o, fighters[i].obj.quaternion);
   }
   v.setUint16(o, Math.max(0, capitals.ally.hp), true); o += 2;
   v.setUint16(o, Math.max(0, capitals.enemy.hp), true); o += 2;
@@ -1903,36 +1930,37 @@ function encodeFleet() {
 }
 function decodeFleet(buf) {
   const v = new DataView(buf);
-  let o = 1;
+  let o = 0;
+  if (v.getUint8(o) !== 2) return; // formato desconocido
+  o += 1;
   const seq = v.getUint32(o, true); o += 4;
   if (seq < snapSeq) return; // instantánea vieja adelantada por la red
   snapSeq = seq;
-  const seen = new Set();
+  const total = v.getUint16(o, true); o += 2;
+  const bits = Math.ceil(total / 8);
+  for (let i = 0; i < total && i < swarm.length; i++) {   // vivos según el mapa
+    const alive = (v.getUint8(o + (i >> 3)) >> (i & 7)) & 1;
+    swarm[i].alive = !!alive;
+  }
+  o += bits;
   const n = v.getUint16(o, true); o += 2;
   for (let k = 0; k < n; k++) {
     const i = v.getUint16(o, true); o += 2;
     const s = swarm[i];
     if (!s) { o += 6; continue; }
     o = readPos(v, o, tv2);
-    // orientar según el desplazamiento: los cazas miran hacia donde van
-    if (!s.alive) { s.obj.position.copy(tv2); s.alive = true; }
-    tv3.copy(tv2).sub(s.obj.position);
-    if (tv3.lengthSq() > 0.02) {
-      lookM.lookAt(tv3, zeroV, s.obj.up); // el invitado orienta según el desplazamiento
-      s.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), 0.5);
-    }
-    s.obj.position.copy(tv2);
-    seen.add(i);
+    if (!s.netTo) { s.netTo = new THREE.Vector3().copy(tv2); s.obj.position.copy(tv2); }
+    else s.netTo.copy(tv2);   // destino: el bucle interpola hacia él
   }
-  for (let i = 0; i < swarm.length; i++) if (!seen.has(i)) swarm[i].alive = false;
-  const hn = v.getUint16(o, true); o += 2;
+  const hn = v.getUint8(o); o += 1;
   const seenH = new Set();
   for (let k = 0; k < hn; k++) {
     const i = v.getUint8(o); o += 1;
     const f = fighters[i];
-    if (!f) { o += 13; continue; }
-    o = readPos(v, o, f.obj.position);
-    o = readQuat(v, o, f.obj.quaternion);
+    if (!f) { o += 6; continue; }
+    o = readPos(v, o, tv2);
+    if (!f.netTo) { f.netTo = new THREE.Vector3().copy(tv2); f.obj.position.copy(tv2); }
+    else f.netTo.copy(tv2);
     if (!f.alive) { f.alive = true; scene.add(f.obj); }
     seenH.add(i);
   }
@@ -1969,7 +1997,36 @@ function netTick(dt) {
   }
   if (net.role === 'host') {
     snapT -= dt;
-    if (snapT <= 0) { snapT = 1 / 8; netSend(encodeFleet()); }
+    if (snapT <= 0) {
+      snapT = 1 / 6;                 // 6 Hz: con interpolación no se nota menos
+      snapSeq++;
+      farPhase = (farPhase + 1) & 3; // rota qué naves de media distancia tocan
+      for (const [id] of net.peers) {
+        const rp = pilotById(id);
+        sendTo(id, encodeFleetFor(rp ? rp.obj.position : ship.position));
+      }
+    }
+  } else if (net.role === 'guest') {
+    // la flota llega a 6 Hz: interpolar para que se vea continua
+    const k = 1 - Math.exp(-9 * dt);
+    for (const s of swarm) {
+      if (!s.alive || !s.netTo) continue;
+      tv1.copy(s.netTo).sub(s.obj.position);
+      if (tv1.lengthSq() > 0.02) {
+        lookM.lookAt(tv1, zeroV, s.obj.up);   // mirar hacia donde avanza
+        s.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), Math.min(1, k * 1.5));
+      }
+      s.obj.position.lerp(s.netTo, k);
+    }
+    for (const f of fighters) {
+      if (!f.alive || !f.netTo) continue;
+      tv1.copy(f.netTo).sub(f.obj.position);
+      if (tv1.lengthSq() > 0.02) {
+        lookM.lookAt(tv1, zeroV, f.obj.up);
+        f.obj.quaternion.slerp(lookQ.setFromRotationMatrix(lookM), Math.min(1, k * 1.5));
+      }
+      f.obj.position.lerp(f.netTo, k);
+    }
   }
   // interpolación de los pilotos remotos entre instantáneas
   for (const rp of remotePilots) {
@@ -2358,7 +2415,7 @@ let kills = 0, msgTimer = 0;
 function message(t) { hud.msg.textContent = t; hud.msg.style.opacity = 1; msgTimer = 2.6; }
 // gancho de depuración (consola): estado de la batalla y daño directo a capitales
 window.__sb = { capitals, damageCapital, damageFighter, killSwarmShip, launchMissile, damagePlayer, camera, embers, colliders,
-  net, encodeFleet, decodeFleet, onNetMessage, remotePilots, makeRemotePilot, drawScore, applyShip, SHIPS,
+  net, encodeFleetFor, decodeFleet, onNetMessage, remotePilots, makeRemotePilot, drawScore, applyShip, SHIPS,
   get shipBody() { return shipBody; },
   set snapSeq(v) { snapSeq = v; }, get snapSeq() { return snapSeq; },
   set mpActive(v) { mpActive = v; }, get mpActive() { return mpActive; }, fighters, swarm, gunships, swarmBatches, ship, touchStick, player, playerEntity, lasers,

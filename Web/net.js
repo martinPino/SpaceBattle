@@ -345,6 +345,13 @@ export function send(msg, exceptId) {
   }
 }
 
+// envío a UN invitado concreto: cada uno recibe la instantánea que le sirve
+export function sendTo(id, msg) {
+  const c = net.peers.get(id);
+  if (!c || !c.open) return;
+  try { c.send(msg); } catch { /* conexión cayendo */ }
+}
+
 export function leave() {
   try { peer?.destroy(); } catch { /* ya cerrado */ }
   peer = null;
