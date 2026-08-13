@@ -73,7 +73,13 @@ export default {
 
     const stub = () => env.ROOMS.get(env.ROOMS.idFromName('global'));
     const cache = caches.default;
-    const key = new Request(`${url.origin}/rooms`, { method: 'GET' });
+    /* La clave lleva la ventana de ocho segundos en la que estamos, y cambia
+       con ella. No es un capricho: pedir `max-age=8` no sirve de nada porque
+       el plan gratuito impone su propio mínimo y sirve la copia mucho más
+       tiempo — medido, más de 76 s. Con la clave móvil, pasada la ventana
+       nadie vuelve a pedir la copia vieja y el desfase es de 8 s de verdad. */
+    const key = new Request(`${url.origin}/rooms?w=${Math.floor(Date.now() / (EDGE_CACHE_S * 1000))}`,
+      { method: 'GET' });
 
     if (request.method === 'POST') {
       /* Un anuncio de sala son unos 200 bytes. El tope se comprueba AQUÍ y no
@@ -85,9 +91,11 @@ export default {
       if (len > 2048) return json({ error: 'too-big' }, 413);
 
       const r = await stub().fetch(request);
-      // Una sala que aparece o desaparece debe verse YA: se tira la copia
-      // cacheada. Un latido que solo mueve el recuento no la invalida, que es
-      // justo lo que hace barata la lectura.
+      // Cuando una sala aparece o desaparece se intenta tirar la copia para
+      // acortar la espera. Es un extra, no una garantía: en workers.dev el
+      // borrado no siempre alcanza al borde. Quien pone el techo es la ventana
+      // de la clave — medido en producción, una baja tarda unos 2 s en
+      // desaparecer de la lista y nunca más de ocho.
       if (r.headers.get('X-List-Changed') === '1') ctx.waitUntil(cache.delete(key));
       return r;
     }
@@ -95,19 +103,16 @@ export default {
     /* La lista se sirve desde la caché del borde unos segundos. Diez curiosos
        mirando cada doce segundos despertarían al objeto quinientas veces por
        hora; así lo despiertan cuatrocientas cincuenta menos. Ir 8 s por detrás
-       en el recuento de pilotos no significa nada para un tablón de salas.
-       OJO: en un subdominio workers.dev no hay zona detrás y la Cache API no
-       guarda nada — el ahorro solo se materializa con dominio propio. Con o
-       sin él el comportamiento es el mismo; cambia cuánta cuota se gasta. */
+       en el recuento de pilotos no significa nada para un tablón de salas. */
     const hit = await cache.match(key);
     if (hit) return noStore(hit);
 
     const fresh = await stub().fetch(request);
     const body = await fresh.text();
-    // Dos copias del mismo cuerpo a propósito: la que se guarda lleva max-age
-    // para que el borde la reutilice, y la que se envía lleva no-store. Si el
-    // navegador se quedara con la suya, el botón REFRESH no haría nada durante
-    // ocho segundos y la invalidación del servidor no podría alcanzarla.
+    // Dos copias del mismo cuerpo a propósito: la que se guarda es cacheable y
+    // la que se envía lleva no-store. Si el navegador se quedara con la suya,
+    // el botón REFRESH no haría nada y ninguna invalidación del servidor podría
+    // alcanzarla.
     const stored = new Response(body, {
       status: fresh.status,
       headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${EDGE_CACHE_S}` },

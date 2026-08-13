@@ -77,7 +77,7 @@ let meteredIce = [];
 const TURN_API = '/api/turn';
 // El tablón de salas vive en Cloudflare (cf-rooms/), donde ya está el relé TURN.
 // URL absoluta a propósito: el juego también corre en los portales, en otro dominio.
-const ROOMS_API = 'https://space-battle-rooms.SUBDOMINIO.workers.dev/rooms';
+const ROOMS_API = 'https://space-battle-rooms.martin-schwarzbock.workers.dev/rooms';
 
 /* ---------------- salas públicas ----------------
    El anfitrión se anuncia cada 30 s mientras admita gente; el anuncio caduca
