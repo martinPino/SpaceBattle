@@ -11,7 +11,7 @@ import { makeSpaceEnvironment, radialGlow } from '../Tools/viewer/space-kit-text
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { onCrazyGames, cgInit, cgStartupRoom, cgRoomOpen, cgRoomClosed, cgInviteLink,
+import { onCrazyGames, cgInit, cgStartupRoom, cgRoomOpen, cgRoomClosed, cgRoomLeft, cgInviteLink,
   cgLoaded, cgPlaying, cgCelebrate } from './crazygames.js';
 import { net, diag, hostGame, joinGame, setReady, startMatch, send as netSend, leave as netLeave, broadcastLobby,
   setName, setTeam, setMode, setShip, sendTo, iceConfig, getTurn, setTurn, refreshTurn,
@@ -2527,7 +2527,8 @@ function wireLobby() {
   el('teamRed').onclick = () => pickTeam('red');
   el('lobbyBack').onclick = () => {
     cgRoomClosed();
-    netLeave();
+    cgRoomLeft();   // cerrar la sala no es salirse de ella: la plataforma
+    netLeave();     // necesita las dos cosas para dejar de contarte dentro
     el('lobby').classList.add('hidden');
     document.getElementById('start').classList.remove('hidden');
   };
@@ -2537,10 +2538,15 @@ function wireLobby() {
        invitación en cualquier momento. Sin cerrar antes lo propio, la sala
        anterior seguiría anunciada y su par seguiría aceptando gente que
        aterrizaría en una partida que ya no existe. */
-    if (net.role !== 'solo') netLeave();
+    if (net.role !== 'solo') { cgRoomClosed(); cgRoomLeft(); netLeave(); }
     show('JOINING', 'Connecting to the host…', false, false);
-    try { await joinGame(id, nameOf()); lobbyRefresh(); }
-    catch { el('lobbyStatus').textContent = 'Could not join that room'; }
+    try {
+      await joinGame(id, nameOf());
+      // también el invitado está en la sala: así su botón de invitar sirve
+      // para traer a un tercero, que es lo que la plataforma espera
+      cgRoomOpen(id);
+      lobbyRefresh();
+    } catch { el('lobbyStatus').textContent = 'Could not join that room'; }
   }
   /* Entrada automática a una sala, por tres vías:
        · ?room=<id> — el enlace normal

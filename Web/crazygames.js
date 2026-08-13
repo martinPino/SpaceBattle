@@ -43,8 +43,10 @@ export async function cgInit({ onJoinRoom, onMute } = {}) {
 export function cgStartupRoom() {
   const sdk = SDK();
   if (!sdk || !ready) return { room: null, instant: false };
+  // Nuestros enlaces usan 'room', pero su simulador de QA manda 'roomName' y
+  // un amigo puede llegar con cualquiera de los dos: se aceptan ambos.
   let room = null;
-  try { room = sdk.game.getInviteParam('room'); } catch { /* sin invitación */ }
+  try { room = sdk.game.getInviteParam('room') || sdk.game.getInviteParam('roomName'); } catch { /* sin invitación */ }
   let instant = false;
   try { instant = !!sdk.game.isInstantMultiplayer; } catch { /* campo ausente */ }
   return { room, instant };
