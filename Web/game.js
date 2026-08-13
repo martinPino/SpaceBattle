@@ -1175,8 +1175,8 @@ const playerEntity = {
 /* ---------------- ENJAMBRES: la guerra de fondo, a lo grande ----------------
    Docenas de cazas librando dogfights ambientales. Usan el MISMO caza del kit
    pero aligerado (fuera los detalles pequeños) para sostener el framerate. */
-const SWARM_PER_SIDE = 92; // 100 por bando contando al jugador, héroes y élite
-const ENEMY_SWARM_MAX = 368; // capacidad para el DOBLADO por oleadas (92·4, tope oleada 3+)
+const SWARM_PER_SIDE = 42;   // 50 por bando contando al jugador, héroes y élite
+const ENEMY_SWARM_MAX = 160; // capacidad para el DOBLADO por oleadas (34·4, tope oleada 3+)
 const SWARM_DETAIL_CUT = /PanelLine|Vent|Conduit|Thruster|NavLight|Collar|HUD|AccentStrip|_Ring_|LeadingEdge|Hardpoint|CoreHalo|Fin_|SensorPod|TipPylon|Breech|Frame|Intake/;
 
 function makeSwarmTemplate(faction) {
@@ -1280,7 +1280,7 @@ new GLTFLoader().load('./assets/ships/swarm-starflyer.glb', (g) => {
    Naves pesadas de 24,5 m — el doble que un caza — con 4 cañones láser y pods de
    misiles. Se hornean a InstancedMesh igual que el enjambre: 15 naves de 12.834
    caras costarían ~2.000 draw calls como objetos sueltos; así cuestan 2. */
-const GUNSHIP_PER_WAVE = 15, GUNSHIP_MAX = 60;
+const GUNSHIP_PER_WAVE = 8, GUNSHIP_MAX = 40;
 // posiciones locales medidas sobre el modelo (morro en +Z)
 const GUN_MUZZLES = [[-7.30, 0.34, 8.68], [7.30, 0.34, 8.68], [-2.05, -2.01, 10.48], [2.05, -2.01, 10.48]];
 const GUN_PODS = [[-4.5, -1.64, 1.6], [4.5, -1.64, 1.6]];
